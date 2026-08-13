@@ -1,0 +1,24 @@
+# Gradle / Kotlin
+/.gradle
+/.kotlin
+/build
+**/build
+local.properties
+
+# IDE
+/.idea
+**/.idea
+*.iml
+
+# macOS
+.DS_Store
+
+# Xcode / iOS
+xcuserdata/
+*.xcuserstate
+DerivedData/
+Pods/
+*.xcworkspace/xcuserdata/
+
+# Claude Code harness
+/.claude/
