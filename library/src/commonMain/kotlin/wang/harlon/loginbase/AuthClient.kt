@@ -329,7 +329,7 @@ public class AuthClient(
         return AuthSession(
             tokens = tokens,
             isNewUser = this["isNewUser"]?.jsonPrimitive?.booleanOrNull,
-            user = this["user"] as? JsonElement,
+            user = this["user"],
         )
     }
 
