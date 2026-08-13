@@ -1,14 +1,26 @@
 [versions]
+# 与消费方 TrendingAI 的 catalog 对齐（composite build 是源码级参与构建，版本不一致会有摩擦）
 agp = "9.2.1"
-kotlin = "2.4.0"
+kotlin = "2.4.10"
 android-minSdk = "24"
 android-compileSdk = "37"
 vanniktechMavenPublish = "0.37.0"
+ktor = "3.5.1"
+kotlinx-serialization = "1.11.0"
+kotlinx-coroutines = "1.11.0"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+# engine 刻意不依赖：消费方各自提供（TrendingAI 已有 okhttp/darwin），
+# 库自带会重复引入，也违背依赖最小集
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
 
 [plugins]
 android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 vanniktech-mavenPublish = { id = "com.vanniktech.maven.publish", version.ref = "vanniktechMavenPublish" }

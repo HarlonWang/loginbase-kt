@@ -23,21 +23,46 @@ Maven      wang.harlon:loginbase-kt      （Maven Central，本仓 tag 触发 CI
 包名        wang.harlon.loginbase
 ```
 
+## 用法
+
+```kotlin
+// 一个 App 一个实例——单飞 refresh 的锁是实例字段，两个实例就是两把锁
+val auth = AuthClient(
+    baseUrl = "https://api.example.com/auth",
+    tokenStore = SharedPreferencesTokenStore(context),   // iOS: NSUserDefaultsTokenStore()
+)
+auth.restore()                                           // 启动时恢复登录态
+
+auth.sendCode("a@b.com")                                 // 邮箱验证码
+auth.verifyCode("a@b.com", "123456")                     // 成功即落盘
+
+openInBrowser(auth.githubSignInUrl("app://cb"))          // GitHub 登录，回跳带 otc
+auth.exchangeOtc(otc)
+
+openInBrowser(auth.githubLinkUrl("app://cb"))            // 已登录用户绑定 GitHub
+
+auth.accessToken()                                       // 业务请求带上
+auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新重试
+```
+
+`HttpClient` 的 **engine 不由本库提供**——消费方 classpath 里要有（Android `ktor-client-okhttp` / iOS `ktor-client-darwin`），多数 KMP App 本来就有。
+
 ## 状态
 
-骨架阶段。已就位：gradle 工程（vanniktech maven-publish、android + iosArm64 + iosSimulatorArm64）、CI 两条 workflow、协议错误码与 `PROTOCOL_VERSION` 及其契约测试。
+核心已实现：`AuthClient`（邮箱验证码 / GitHub OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**。23 个测试。
 
-待实现（服务端仓 `docs/plan.md` 第 4 步任务 2~3）：
-
-- `AuthClient`——send / verify / refresh / signOut / oauth exchange / link 的 Ktor 封装
-- `TokenStore` 接口 + multiplatform-settings 默认实现
-- `AuthState` flow
-- **单飞 refresh**——服务端救活护栏（1h/3 次）按客户端有此纪律设定，并发刷新会消耗配额
-- 竞态经验逐条固化：token 获取互斥串行化、丢回执重试、时钟偏差归因、`invalid_refresh_token` 判定与登出策略
+待办见 [issue](https://github.com/HarlonWang/loginbase-kt/issues)：TrendingAI 接入（composite build）、iOS 真机链路验证、首版发布。
 
 ## 设计红线
 
-依赖最小集：ktor + kotlinx-serialization + multiplatform-settings。加任何新依赖前先停下来问一遍值不值——auth 库是供应链攻击的最高价值目标。**本库不含 UI**（登录界面归各 App 实现）。
+**依赖最小集**：`ktor-client-core` + `kotlinx-serialization-json` + `kotlinx-coroutines-core`，**仅此三个**。
+
+- 不用 `ktor-client-content-negotiation` / `ktor-serialization-kotlinx-json`：请求体手工序列化、响应手工解析，注入的 `HttpClient` 因此不需要任何插件配置
+- 不用 `multiplatform-settings`：存两个字符串而已，平台实现各十几行（Android `SharedPreferences`、iOS `NSUserDefaults`），且**落盘的同步性是与服务端救活机制配套的关键语义，不该藏在第三方库的默认参数里**
+- 不带 HTTP engine：消费方提供
+- **不含 UI**：登录界面归各 App 实现
+
+加任何新依赖前先停下来问一遍值不值——auth 库是供应链攻击的最高价值目标。
 
 ## 开发
 
