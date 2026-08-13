@@ -138,7 +138,7 @@ public class AuthClient(
      * 而浏览器导航带不了 Authorization 头。
      */
     public suspend fun githubLinkUrl(redirect: String): String {
-        val token = accessToken() ?: throw IllegalStateException("link 需要已登录")
+        val token = accessToken() ?: throw NotAuthenticatedException("GitHub linking requires an authenticated session")
         val body = request(
             url = "$base/oauth/github/link/start",
             payload = mapOf("redirect" to redirect),
@@ -185,7 +185,13 @@ public class AuthClient(
         val before = tokenStore.load() ?: return RefreshOutcome.NoSession.also { signedOut() }
 
         return refreshMutex.withLock {
-            val current = tokenStore.load() ?: return@withLock RefreshOutcome.NoSession
+            val current = tokenStore.load() ?: run {
+                // 等锁期间会话没了（并发 signOut，或别人刷到 401 清了会话）。
+                // 那些路径本身都已置过 SignedOut，这里再置一次是幂等的防御——
+                // 与锁外的早返回分支对称，不依赖「别人一定记得置」这个不变式。
+                signedOut()
+                return@withLock RefreshOutcome.NoSession
+            }
             if (current.refreshToken != before.refreshToken) {
                 // 等锁期间别人刷新成功了，复用——单飞的关键一步
                 return@withLock RefreshOutcome.Success(current)
@@ -219,9 +225,9 @@ public class AuthClient(
             }
 
             val body = response.parseJsonOrNull()
-                ?: return@withLock RefreshOutcome.Failed(IllegalStateException("空响应"))
+                ?: return@withLock RefreshOutcome.Failed(IllegalStateException("empty refresh response"))
             val tokens = body.toTokenPair()
-                ?: return@withLock RefreshOutcome.Failed(IllegalStateException("响应缺令牌字段"))
+                ?: return@withLock RefreshOutcome.Failed(IllegalStateException("refresh response missing token fields"))
 
             // 先落盘再宣告成功：没存住就当没刷成功，否则下次拿旧令牌去刷会触发
             // 服务端救活（有护栏）。TokenStore 实现保证 save 返回时已落盘。
@@ -285,13 +291,16 @@ public class AuthClient(
         val body = response.parseJsonOrNull()
         if (!response.status.isSuccess()) {
             val raw = body?.get("error")?.jsonPrimitive?.content.orEmpty()
+            // 响应体不是协议 JSON（网关的 HTML 错误页、空体等）时 raw 为空，
+            // 回退成 http_<status> 而不是留个空串——否则异常里没有任何可诊断信息
+            val diagnosable = raw.ifEmpty { "http_${response.status.value}" }
             throw AuthApiException(
                 status = response.status.value,
                 error = AuthError.fromWire(raw),
                 retryAfterSeconds = body?.get("retryAfterSeconds")?.jsonPrimitive?.int,
                 refreshFailure = body?.get("reason")?.jsonPrimitive?.content
                     ?.let { RefreshFailure.fromWire(it) },
-                rawError = raw,
+                rawError = diagnosable,
             )
         }
         return body ?: JsonObject(emptyMap())

@@ -228,9 +228,10 @@ class AuthClientTest {
 
     @Test
     fun `githubLinkUrl 需要已登录，且带 Bearer`() = runTest {
-        // 未登录直接抛，不白打一次服务端
+        // 未登录直接抛，不白打一次服务端。用专用类型而非 IllegalStateException：
+        // UI 状态与实际会话可能短暂不同步，调用方要能单独 catch 它去引导登录
         val anonymous = AuthClient(BASE, InMemoryTokenStore())
-        assertFailsWith<IllegalStateException> { anonymous.githubLinkUrl("app://cb") }
+        assertFailsWith<NotAuthenticatedException> { anonymous.githubLinkUrl("app://cb") }
 
         var sawBearer: String? = null
         val (client, _) = clientWith(InMemoryTokenStore(TokenPair("a0", "r0"))) { request ->
@@ -240,6 +241,31 @@ class AuthClientTest {
         val url = client.githubLinkUrl("app://cb")
         assertEquals("https://github.com/login/oauth/authorize?x=1", url)
         assertEquals("Bearer a0", sawBearer)
+    }
+
+    @Test
+    fun `非协议响应体（网关 HTML 错误页）仍给出可诊断信息`() = runTest {
+        // Cloudflare 5xx 错误页、空体等——解析不出 error 字段时不能只留个空串
+        val (client, _) = clientWith(InMemoryTokenStore()) {
+            respond("<html>502 Bad Gateway</html>", HttpStatusCode.BadGateway, headersOf(HttpHeaders.ContentType, "text/html"))
+        }
+        val e = assertFailsWith<AuthApiException> { client.sendCode("a@b.com") }
+        assertEquals(AuthError.UNKNOWN, e.error)
+        assertEquals(502, e.status)
+        assertEquals("http_502", e.rawError, "至少要能看出是哪个状态码")
+    }
+
+    @Test
+    fun `等锁期间会话被登出，refresh 返回 NoSession 且状态为登出`() = runTest {
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        val (client, _) = clientWith(store) {
+            respond("""{"accessToken":"a1","refreshToken":"r1"}""", HttpStatusCode.OK, jsonHeaders())
+        }
+        client.restore()
+        store.clear() // 模拟并发 signOut 在 refresh 进锁前清掉了会话
+
+        assertIs<RefreshOutcome.NoSession>(client.refresh())
+        assertEquals(AuthState.SignedOut, client.authState.value)
     }
 
     // ---- 登出与恢复 ----

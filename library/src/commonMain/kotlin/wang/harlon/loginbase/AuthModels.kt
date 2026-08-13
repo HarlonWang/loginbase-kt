@@ -62,6 +62,17 @@ public sealed interface RefreshOutcome {
 }
 
 /**
+ * 需要已登录的操作（如绑定第二身份）在无会话时抛出。
+ *
+ * 独立类型而非 `IllegalStateException`：未登录时点「绑定 GitHub」不一定是编程错误
+ * ——UI 状态与实际会话可能短暂不同步——调用方需要能单独 catch 它并引导登录。
+ * 也不用返回 null 表达：那会和「网络失败」混在一起无法区分。
+ */
+public class NotAuthenticatedException(
+    message: String = "operation requires an authenticated session",
+) : Exception(message)
+
+/**
  * 服务端按协议返回的错误（`{"error": ...}`）。
  * 网络层异常不走这里——那是 ktor 自己的异常，调用方据此区分「服务端说不行」与「没连上」。
  */
