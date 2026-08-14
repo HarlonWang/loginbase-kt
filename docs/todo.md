@@ -41,17 +41,19 @@
 - **注意（原修法里没写对的一点）**：`AuthClient(config: LoginbaseConfig)` 配 **data class** 是解决不了问题的——data class 的构造函数默认参数同样编译成 bitmask synthetic constructor，加字段照样破兼容。真正起作用的是让 `LoginbaseConfig` **可变**（`var` 属性）：加一个选项等于加一个字段 + getter/setter，这才是二进制兼容的。代价是配置对象可被调用方存出去后修改，故 `AuthClient` 在构造期把值读成不可变字段，并补了测试锁住这个语义。
 - **参照**：ktor `HttpClient(engine) {}`、supabase-kt `createSupabaseClient(url, key) {}` 都是「必填位置参数 + 可选 DSL」这个分法。
 
-### [ ] 5. `fromWire()` 不该是公开 API
+### [x] 5. `fromWire()` 不该是公开 API — 已完成
 
 - **位置**：`library/src/commonMain/kotlin/wang/harlon/loginbase/Protocol.kt:55` `:87`
 - **问题**：这两个是响应解码器，只有 `AuthClient` 内部解析 JSON 时用；消费方拿到的已经是枚举，永远不需要它。公开它等于把 wire 字符串写进公开契约，服务端改错误码字符串就成了客户端的 breaking change。
 - **修法**：降 `internal`。KMP 里 test source set 是 main 的 friend module（`usableTag()` 现在就是这么用的），`ProtocolTest` 那 4 个测试一行都不用改。
+- **落地**：两个 `companion object` 连同 `fromWire` 一起降 `internal`；`ProtocolTest` 果然一行未改，全绿。
 
-### [ ] 6. `AuthError.wire` / `RefreshFailure.wire` 属性同理
+### [x] 6. `AuthError.wire` / `RefreshFailure.wire` 属性同理 — 已完成
 
 - **位置**：`Protocol.kt:17` `:67`
 - **问题**：同第 5 条。消费方要原始串的话 `AuthApiException.rawError` 已经给了。
 - **修法**：降 `internal`。
+- **落地**：已降。`LoginbaseException.Api.rawError` 的默认值 `= error.wire` 引用了 internal 属性，编译无碍（默认参数不受公开 API 可见性约束，那条限制只针对 inline 函数）。
 
 ### [ ] 7. `platformLanguageTag()` 是顶层 public expect 函数，锁死太早
 
@@ -218,6 +220,7 @@
 - **位置**：`library/build.gradle.kts`
 - **问题**：库已配好 Maven Central 发布链路，但没有 API dump，也没有 `apiCheck`。第 1/4/5/6/7/8 条这些收窄如果发版后再做，CI 不会提醒这是破坏性变更。
 - **修法**：**顺序很重要**——先做完 P0 的公开面调整，再 `apiDump` 定基线并接进 CI。
+- **优先级上调**：第 37 条决定不开 `explicitApi()`，「新增声明忘标 `internal` 会静默公开」这个洞就只能靠 BCV 在 CI 里兜。这条从「工程收尾」升为公开面收窄之后的**必做项**。
 
 ### [ ] 32. 删掉 XCFramework 配置
 
@@ -251,11 +254,30 @@
 
 ---
 
-## 可选（不作为建议）
+## 可见性治理
 
-### [ ] 37. 满篇 `public` 关键字
+### [x] 37. 满篇 `public` 关键字 — 已处理（决定：删掉，不开 `explicitApi()`）
 
-`explicitApi()` 没有启用，Kotlin 默认可见性就是 public，所以这 40 多处关键字在编译器看来等于没写；interface 成员、`companion object`、嵌套在 public sealed interface 里的 `data object` 更是双重冗余。要么开 `explicitApi()` 让它有意义，要么全删（行为完全不变）。**纯风格选择，两个方向都成立，不做推荐。**
+`explicitApi()` 没有启用，Kotlin 默认可见性就是 public，所以那 40 多处关键字在编译器看来等于没写，IDE 也一直在报 `Redundant 'public' modifier`。两条出路都能消除提示、且都不改变任何声明的可见性：删掉关键字，或开 `explicitApi()` 让关键字变成必需。
+
+**决定：删掉全部 `public` 关键字，不开 `explicitApi()`。**
+
+需要留意的代价（选这条就等于接受）：
+
+- 今后新增声明**忘写 `internal` 会静默变成公开 API**，编译器不拦——第 5、6 条就是这么来的
+- 读代码时「有意公开」和「忘标 internal」长得一模一样，只能靠 review 兜
+- 缓解手段：第 31 条的 binary-compatibility-validator 能在 CI 里拦住「公开面意外变大」，本质上补的就是这个洞。选了删关键字之后，**第 31 条的优先级应当上调**
+
+> Kotlin 官方库作者指南推荐库开 explicit API mode（[api-guidelines-simplicity](https://kotlinlang.org/docs/api-guidelines-simplicity.html)）。这里是明知推荐而选另一条，理由是代码观感，记录在案便于日后重议。
+
+### 公开面判定规则（长期适用）
+
+1. 消费方要**调用**的 → 公开：`AuthClient` 的方法、`TokenStore`、`OAuthProvider`、`LoginbaseConfig` 的选项
+2. 消费方会**收到**的 → 公开：`LoginbaseException` 各类、`AuthError`、`RefreshFailure`、`RefreshOutcome`、模型类
+3. 只有库自己编解码 wire 格式用的 → **`internal`**：`fromWire`、`wire`、`usableTag`
+4. 测试要用但消费方不用的 → **`internal` 就够**：KMP 的 test source set 是 main 的 friend module
+
+元规则：**默认应当是 `internal`，公开要能说出理由**。注意 Kotlin 的默认可见性是 `public`，所以「什么都不写」= 公开 = 发到 Maven Central 后撤不回来——`internal` 必须显式写。
 
 ---
 

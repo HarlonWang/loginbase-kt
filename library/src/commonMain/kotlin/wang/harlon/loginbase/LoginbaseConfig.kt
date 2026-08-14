@@ -22,7 +22,7 @@ import io.ktor.client.HttpClient
  * 错误推迟到运行时。故必填的留作位置参数，可选的进 DSL——ktor 的 `HttpClient(engine) {}`
  * 与 supabase-kt 的 `createSupabaseClient(url, key) {}` 都是这个分法。
  */
-public class LoginbaseConfig internal constructor() {
+class LoginbaseConfig internal constructor() {
 
     /**
      * 注入自己的 [HttpClient] 以复用连接池/日志；缺省时库自建。
@@ -33,7 +33,7 @@ public class LoginbaseConfig internal constructor() {
      * ⚠️ 装了 ktor `Auth` 插件的那个 client **不要**注入进来：本库的 `POST /refresh`
      * 也会过该插件，服务端 401 时插件回调里再调 `refresh()` 会撞上不可重入的单飞锁。
      */
-    public var httpClient: HttpClient? = null
+    var httpClient: HttpClient? = null
 
     /**
      * 验证码邮件用什么语言（protocol 1.3.0）。缺省跟随系统语言。
@@ -41,5 +41,5 @@ public class LoginbaseConfig internal constructor() {
      * App 内有自己的语言设置时设它，**返回 `null` 表示「我没意见」→ 回落系统语言**，
      * 不是「不要发」。想一律某种语言就返回定值，如 `{ "en" }`。
      */
-    public var localeProvider: () -> String? = ::platformLanguageTag
+    var localeProvider: () -> String? = ::platformLanguageTag
 }

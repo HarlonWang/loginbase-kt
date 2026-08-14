@@ -13,7 +13,7 @@ import kotlin.jvm.JvmInline
  * [id] 会被 URL 路径编码后拼进请求，故传什么都不会越出路径段。
  */
 @JvmInline
-public value class OAuthProvider(public val id: String) {
+value class OAuthProvider(val id: String) {
 
     init {
         require(id.isNotBlank()) { "OAuth provider id must not be blank" }
@@ -21,7 +21,7 @@ public value class OAuthProvider(public val id: String) {
 
     override fun toString(): String = id
 
-    public companion object {
-        public val GitHub: OAuthProvider = OAuthProvider("github")
+    companion object {
+        val GitHub: OAuthProvider = OAuthProvider("github")
     }
 }

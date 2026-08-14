@@ -8,7 +8,7 @@ package wang.harlon.loginbase
  * 取的是「App 显示语言」而非「系统首选语言」：这件事的起点就是 App UI 与验证码邮件
  * 语言割裂（App 英文、邮件中文），对齐用户眼睛看到的那个语言才有意义。
  */
-public expect fun platformLanguageTag(): String?
+expect fun platformLanguageTag(): String?
 
 /**
  * 空白与 `und`（BCP 47 的「未确定语言」）一律视为「没有语言信息」。

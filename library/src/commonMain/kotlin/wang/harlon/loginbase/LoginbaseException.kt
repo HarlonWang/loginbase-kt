@@ -19,7 +19,7 @@ package wang.harlon.loginbase
  * **协程取消不在这里**：`CancellationException` 不是失败，必须原样穿透，
  * 否则破坏结构化并发。
  */
-public sealed class LoginbaseException(
+sealed class LoginbaseException(
     message: String,
     cause: Throwable? = null,
 ) : Exception(message, cause) {
@@ -30,15 +30,15 @@ public sealed class LoginbaseException(
      * 只有服务端**明确拒绝**才是这个：响应形状对不上是 [MalformedResponse]，
      * 根本没连上是 [Network]。三者的处置方式完全不同，所以不能混成一类。
      */
-    public class Api(
-        public val status: Int,
-        public val error: AuthError,
+    class Api(
+        val status: Int,
+        val error: AuthError,
         /** `too_many_requests` 才有：还要等多少秒 */
-        public val retryAfterSeconds: Int? = null,
+        val retryAfterSeconds: Int? = null,
         /** `invalid_refresh_token` 才有 */
-        public val refreshFailure: RefreshFailure? = null,
+        val refreshFailure: RefreshFailure? = null,
         /** 服务端原始 error 串，便于排查客户端尚未认识的新错误码 */
-        public val rawError: String = error.wire,
+        val rawError: String = error.wire,
     ) : LoginbaseException("loginbase api error: $rawError (HTTP $status)")
 
     /**
@@ -47,7 +47,7 @@ public sealed class LoginbaseException(
      * 对调用方的含义是「这次没打通，会话本身没有任何结论」——**不要据此清会话**，
      * 弱网用户（漫游、地铁）会被无谓踢下线。
      */
-    public class Network(
+    class Network(
         cause: Throwable,
     ) : LoginbaseException(
         "loginbase network failure: ${cause.message ?: cause::class.simpleName}",
@@ -60,9 +60,9 @@ public sealed class LoginbaseException(
      * 与 [Api] 分开是因为处置方式不同：[Api] 是「服务端说不行」，调用方按错误码给用户
      * 提示；这个是「两端对不上」，用户重试多少次都一样，该报给开发者。
      */
-    public class MalformedResponse(
+    class MalformedResponse(
         /** 缺失或无法解析的字段 */
-        public val field: String,
+        val field: String,
     ) : LoginbaseException("loginbase malformed response: missing or invalid `$field`")
 
     /**
@@ -71,7 +71,7 @@ public sealed class LoginbaseException(
      * 单列一类是因为它有个很具体的后果：刷新拿到的新令牌**没存住**。此时必须当作刷新
      * 失败（见 [AuthClient.refresh]），否则下次会拿旧令牌去刷、白白消耗服务端的救活配额。
      */
-    public class Storage(
+    class Storage(
         cause: Throwable,
     ) : LoginbaseException(
         "loginbase token store failure: ${cause.message ?: cause::class.simpleName}",
@@ -85,7 +85,7 @@ public sealed class LoginbaseException(
      * 错误——UI 状态与实际会话可能短暂不同步——调用方需要能单独 catch 它并引导登录。
      * 也不用返回 null 表达：那会和「网络失败」混在一起无法区分。
      */
-    public class NotAuthenticated(
+    class NotAuthenticated(
         message: String = "operation requires an authenticated session",
     ) : LoginbaseException(message)
 }

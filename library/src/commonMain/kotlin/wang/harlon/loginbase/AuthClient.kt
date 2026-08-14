@@ -71,7 +71,7 @@ import kotlinx.serialization.json.jsonPrimitive
  * @param configure 可选配置，见 [LoginbaseConfig]——选项放在那里而不是做成构造函数
  *   参数，是为了将来加选项时不破二进制兼容（理由见该类文档）
  */
-public class AuthClient(
+class AuthClient(
     baseUrl: String,
     private val tokenStore: TokenStore,
     configure: LoginbaseConfig.() -> Unit = {},
@@ -125,10 +125,10 @@ public class AuthClient(
     private val refreshMutex = Mutex()
 
     private val _authState = MutableStateFlow<AuthState>(AuthState.Unknown)
-    public val authState: StateFlow<AuthState> = _authState.asStateFlow()
+    val authState: StateFlow<AuthState> = _authState.asStateFlow()
 
     /** 从存储恢复登录态。App 启动时调一次，之后 [authState] 才有意义。 */
-    public suspend fun restore(): AuthState {
+    suspend fun restore(): AuthState {
         val state = if (tokenStore.load() != null) AuthState.SignedIn else AuthState.SignedOut
         _authState.value = state
         return state
@@ -144,7 +144,7 @@ public class AuthClient(
      * 不发 `und`：服务端虽然也把它当未传，但省略字段才能让服务端事件区分
      * 「客户端没传」与「传了但不支持」，那是排查客户端链路故障的唯一信号。
      */
-    public suspend fun sendCode(email: String): SendCodeResult {
+    suspend fun sendCode(email: String): SendCodeResult {
         val payload = buildMap {
             put("email", email)
             resolveLocale()?.let { put("locale", it) }
@@ -165,7 +165,7 @@ public class AuthClient(
         localeProvider().usableTag() ?: platformLanguageTag()
 
     /** `POST /code/verify`，成功即建立会话并落盘。 */
-    public suspend fun verifyCode(email: String, code: String): AuthSession =
+    suspend fun verifyCode(email: String, code: String): AuthSession =
         request("$base/code/verify", mapOf("email" to email, "code" to code))
             .toSession()
             .also { persist(it.tokens) }
@@ -181,12 +181,12 @@ public class AuthClient(
      *
      * @param provider 见 [OAuthProvider]；服务端启用了哪几个由服务端 App 配置，本库不校验
      */
-    public fun signInUrl(provider: OAuthProvider, redirect: String): String =
+    fun signInUrl(provider: OAuthProvider, redirect: String): String =
         "$base/oauth/${provider.id.encodeURLPathPart()}/start" +
             "?redirect=${redirect.encodeURLParameter()}"
 
     /** `POST /oauth/exchange`：拿 deepLink 回来的 otc 换令牌对，成功即落盘。 */
-    public suspend fun exchangeOtc(otc: String): AuthSession =
+    suspend fun exchangeOtc(otc: String): AuthSession =
         request("$base/oauth/exchange", mapOf("otc" to otc))
             .toSession()
             .also { persist(it.tokens) }
@@ -201,7 +201,7 @@ public class AuthClient(
      * 之所以要先 POST 换 URL 而不能直接开浏览器：这一步需要 Bearer 鉴权，
      * 而浏览器导航带不了 Authorization 头。
      */
-    public suspend fun linkUrl(provider: OAuthProvider, redirect: String): String {
+    suspend fun linkUrl(provider: OAuthProvider, redirect: String): String {
         val token = accessToken()
             ?: throw LoginbaseException.NotAuthenticated(
                 "Linking an OAuth identity requires an authenticated session"
@@ -223,7 +223,7 @@ public class AuthClient(
      * @param forceRefresh 业务请求收到 401 时传 true——走单飞刷新拿新的再重试一次。
      * @return 无会话或刷新失败时为 null
      */
-    public suspend fun accessToken(forceRefresh: Boolean = false): String? {
+    suspend fun accessToken(forceRefresh: Boolean = false): String? {
         if (forceRefresh) {
             return when (val outcome = refresh()) {
                 is RefreshOutcome.Success -> outcome.tokens.accessToken
@@ -252,7 +252,7 @@ public class AuthClient(
      * [LOCK_FUSE_TIMEOUT_MS] 保险丝（只在注入的 client 没装 HttpTimeout 时补装），
      * 它刻意宽松——职责是「别让锁永远握着」，不是替消费方决定超时值。
      */
-    public suspend fun refresh(): RefreshOutcome {
+    suspend fun refresh(): RefreshOutcome {
         val before = tokenStore.load() ?: return RefreshOutcome.NoSession.also { signedOut() }
 
         return refreshMutex.withLock {
@@ -326,7 +326,7 @@ public class AuthClient(
      * 立刻是登出的，网络问题不该把人卡在登录态；服务端那条会话最坏留到 refresh
      * token 自然失效或被重用检测清掉。
      */
-    public suspend fun signOut() {
+    suspend fun signOut() {
         val token = tokenStore.load()?.accessToken
         if (token != null) {
             runCatching { http.delete("$base/sessions") { header(HttpHeaders.Authorization, "Bearer $token") } }
@@ -336,7 +336,7 @@ public class AuthClient(
     }
 
     /** 登出该用户全部会话：`DELETE /sessions/all` + 清本地。同样尽力而为。 */
-    public suspend fun signOutAll() {
+    suspend fun signOutAll() {
         val token = tokenStore.load()?.accessToken
         if (token != null) {
             runCatching { http.delete("$base/sessions/all") { header(HttpHeaders.Authorization, "Bearer $token") } }

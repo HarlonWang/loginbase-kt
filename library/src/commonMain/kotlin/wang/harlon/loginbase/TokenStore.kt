@@ -4,7 +4,7 @@ package wang.harlon.loginbase
  * 一对令牌。`refreshToken` 是服务端 32 字节 CSPRNG 的 base64url，服务端只存其 SHA-256；
  * `accessToken` 是 HS256 JWT，客户端**不校验签名也不解析**（见 [AuthClient] 关于时钟偏差的说明）。
  */
-public data class TokenPair(
+data class TokenPair(
     val accessToken: String,
     val refreshToken: String,
 )
@@ -25,20 +25,20 @@ public data class TokenPair(
  * `NSUserDefaultsTokenStore`）。这也让存储命名空间掌握在 App 手里，
  * 同设备多 App 不会撞在库的默认值上。
  */
-public interface TokenStore {
-    public suspend fun load(): TokenPair?
+interface TokenStore {
+    suspend fun load(): TokenPair?
 
     /** 必须同步落盘后再返回 */
-    public suspend fun save(tokens: TokenPair)
+    suspend fun save(tokens: TokenPair)
 
-    public suspend fun clear()
+    suspend fun clear()
 }
 
 /**
  * 进程内实现，不落盘。用于测试，以及「本次启动内有效即可」的场景。
  * 生产别用——进程重启即登出。
  */
-public class InMemoryTokenStore(initial: TokenPair? = null) : TokenStore {
+class InMemoryTokenStore(initial: TokenPair? = null) : TokenStore {
     private var tokens: TokenPair? = initial
 
     override suspend fun load(): TokenPair? = tokens
