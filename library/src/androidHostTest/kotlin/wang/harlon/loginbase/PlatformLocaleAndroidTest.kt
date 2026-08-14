@@ -1,6 +1,5 @@
 package wang.harlon.loginbase
 
-import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
@@ -44,7 +43,7 @@ class PlatformLocaleAndroidTest {
             )
         }
         AuthClient("https://api.example.com/auth", InMemoryTokenStore()) {
-            httpClient = HttpClient(engine)
+            httpEngine = engine
         }.sendCode("u@x.com")
         return Json.parseToJsonElement(body).jsonObject
     }

@@ -1,6 +1,7 @@
 package wang.harlon.loginbase
 
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.HttpClientEngine
 
 /**
  * [AuthClient] 的可选配置，通过构造时的尾随 lambda 设置。
@@ -25,15 +26,30 @@ import io.ktor.client.HttpClient
 class LoginbaseConfig internal constructor() {
 
     /**
-     * 注入自己的 [HttpClient] 以复用连接池/日志；缺省时库自建。
+     * 注入自己的 [HttpClientEngine]——证书固定、代理、自定义 DNS、OkHttp 拦截器都在
+     * 这一层配。缺省时由 ktor 从 classpath 上发现一个（Android: okhttp / iOS: darwin）。
      *
-     * **不含 engine**——消费方 classpath 里要有（Android: okhttp / iOS: darwin），
-     * 库不替你选（依赖最小集，且消费方通常已有）。
+     * 传 engine，[HttpClient] 由本库自建，engine 仍归你所有（ktor 的
+     * `HttpClient(engine)` 走 `manageEngine = false`，[AuthClient.close] 不会关掉它）。
+     * 连接池是 engine 级的，所以这样并**不会**多出一个池。
      *
-     * ⚠️ 装了 ktor `Auth` 插件的那个 client **不要**注入进来：本库的 `POST /refresh`
-     * 也会过该插件，服务端 401 时插件回调里再调 `refresh()` 会撞上不可重入的单飞锁。
+     * ## 为什么是 engine 而不是整个 `HttpClient`
+     *
+     * 注入整个 client 意味着本库最安全敏感的那条请求（`POST /refresh`）要跑在一套
+     * **未知的插件**上。已知的两颗地雷：
+     *
+     * - ktor `Auth` 插件：401 时它的回调里再调 `refresh()`，而当前协程已持有单飞锁，
+     *   `Mutex` 不可重入 → **永久挂起**
+     * - ktor `HttpRequestRetry`：默认配置就是「5xx 与 IOException 重试 3 次」，
+     *   于是单飞辛苦收敛成的 1 次刷新，在 client 内部被悄悄放大成 4 次。服务端若已
+     *   消费掉那个 refresh token，就是 4 次救活判定，**一轮撞穿 1h/3 次护栏**、
+     *   整条会话按盗用撤销
+     *
+     * 而注入真正值钱的能力（证书固定、代理、抓包）全在 engine 级——**交出 engine 就够了，
+     * 不必交出 client**。代价只有消费方 client 级插件（主要是 ktor `Logging`）不再作用于
+     * auth 请求；engine 级的拦截器照常生效。
      */
-    var httpClient: HttpClient? = null
+    var httpEngine: HttpClientEngine? = null
 
     /**
      * 验证码邮件用什么语言（protocol 1.3.0）。缺省跟随系统语言。
@@ -44,18 +60,15 @@ class LoginbaseConfig internal constructor() {
     var localeProvider: () -> String? = Loginbase::appLanguageTag
 
     /**
-     * 单飞锁保险丝的时长，见 [AuthClient.refresh]。**`internal`，不对外开放**——
-     * 它的职责是「别让锁永远握着」，不是替消费方决定超时值，那件事该由消费方在自己的
-     * `HttpClient` 上配 `requestTimeoutMillis`。
+     * 请求超时，见 [AuthClient.refresh] 对「别让锁永远握着」的说明。
      *
-     * 存在的唯一理由是**让测试能把它调小**：保险丝走 `withTimeout`，用的是协程的时钟，
-     * 测试里必须跑在真实时钟上（`runTest` 的虚拟时钟会直接跳过 45 秒），若不能调小，
-     * 一个熔断用例就要真等 45 秒。
+     * **`internal`，不对外开放**：本库自己建 client，超时行为因此是确定的，不需要
+     * 消费方参与。存在的唯一理由是**让测试能把它调小**——否则一个「请求挂住」的用例
+     * 要真等 [DEFAULT_TIMEOUT_MILLIS] 那么久。
      */
-    internal var lockFuseMillis: Long = DEFAULT_LOCK_FUSE_MILLIS
+    internal var timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS
 
     internal companion object {
-        // 刻意宽松：它是兜底，不是超时策略
-        const val DEFAULT_LOCK_FUSE_MILLIS: Long = 45_000L
+        const val DEFAULT_TIMEOUT_MILLIS: Long = 15_000L
     }
 }

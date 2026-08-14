@@ -1,6 +1,8 @@
 package wang.harlon.loginbase
 
 import io.ktor.client.HttpClient
+import io.ktor.client.HttpClientConfig
+import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.delete
@@ -17,7 +19,6 @@ import io.ktor.http.encodeURLParameter
 import io.ktor.http.encodeURLPathPart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,7 +27,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -85,14 +85,14 @@ class AuthClient(
     // 构造期就把配置读成不可变字段。LoginbaseConfig 刻意可变（可变才换来二进制兼容），
     // 但调用方若在 lambda 里把 this 存了出去，之后再改不该影响已经建好的 client。
     private val localeProvider: () -> String?
-    private val injectedHttpClient: HttpClient?
-    private val lockFuseMillis: Long
+    private val injectedEngine: HttpClientEngine?
+    private val timeoutMillis: Long
 
     init {
         val config = LoginbaseConfig().apply(configure)
         localeProvider = config.localeProvider
-        injectedHttpClient = config.httpClient
-        lockFuseMillis = config.lockFuseMillis
+        injectedEngine = config.httpEngine
+        timeoutMillis = config.timeoutMillis
     }
 
     // 只用来把 JsonObject 序列化成请求体、把响应体解析成 JsonObject——没有任何
@@ -102,31 +102,27 @@ class AuthClient(
     }
 
     // 请求体手工序列化、响应手工解析——故不需要 ContentNegotiation 插件：
-    // 少两个 ktor 依赖，且注入的 HttpClient 无需任何插件配置即可工作。
+    // 少两个 ktor 依赖。
     //
-    // 惰性初始化：engine 由消费方提供，无参构造 HttpClient 在 classpath 没有 engine 时
-    // 会直接抛异常。不发 HTTP 的 API（signInUrl 拼串、restore 读存储）不该被这个
-    // 要求连坐——真正发请求时才需要 engine。
+    // **client 一律由本库自建**，消费方最多提供 engine（见 [LoginbaseConfig.httpEngine]）。
+    // 这样插件集合完全由库掌控：ktor `Auth` 的重入死锁、`HttpRequestRetry` 把一次刷新
+    // 悄悄放大成四次这类问题，从根上不存在；超时行为也是确定的，不必去猜消费方配了什么。
     //
-    // 注入的 client **原样使用，绝不派生**。曾经这里会在消费方没装 HttpTimeout 时
-    // `injected.config { install(HttpTimeout) }` 补一道保险丝，两个问题：
-    //
-    // 1. `config {}` 派生出的 client 会把 engine 的 clientRefCount +1。消费方
-    //    `close()` 自己那个 client 时 refcount 只从 2 降到 1，**engine 永不关闭**，
-    //    而派生出来的这个从不 close，refcount 永远回不到 0 → 线程池泄漏。
-    // 2. 判据 `pluginOrNull(HttpTimeout) != null` 太粗：`HttpTimeoutConfig` 三个字段
-    //    互相独立且默认 null，消费方只配了 `connectTimeoutMillis`（很常见）时插件存在、
-    //    保险丝被跳过，但连上之后服务端不回照样无限挂住——正是它声称要消灭的形态。
-    //
-    // 保险丝改在 [runRound] 里用 `withTimeout` 实现：与消费方的 client 配置完全正交，
-    // 既不派生 client，也不依赖对方装了什么插件。
+    // 惰性初始化：没给 engine 时由 ktor 从 classpath 发现一个，classpath 上没有会直接
+    // 抛异常。不发 HTTP 的 API（signInUrl 拼串、restore 读存储）不该被这个要求连坐——
+    // 真正发请求时才需要 engine。
     private val httpDelegate = lazy {
-        injectedHttpClient ?: HttpClient {
-            install(HttpTimeout) {
-                requestTimeoutMillis = TIMEOUT_MS
-                connectTimeoutMillis = TIMEOUT_MS
-                socketTimeoutMillis = TIMEOUT_MS
-            }
+        val engine = injectedEngine
+        // 传 engine 的重载走 manageEngine = false，close() 不会关掉消费方的 engine
+        if (engine != null) HttpClient(engine) { installTimeout() }
+        else HttpClient { installTimeout() }
+    }
+
+    private fun HttpClientConfig<*>.installTimeout() {
+        install(HttpTimeout) {
+            requestTimeoutMillis = timeoutMillis
+            connectTimeoutMillis = timeoutMillis
+            socketTimeoutMillis = timeoutMillis
         }
     }
 
@@ -315,11 +311,10 @@ class AuthClient(
      *
      * 与 Logto 时代的一处差异：那时要给锁加 30 秒超时守卫，因为刷新藏在 SDK 的异步
      * 回调里、解析炸掉时 completion 永远不来。这里 HTTP 调用是我们自己的，`withLock`
-     * 的 finally 保证锁必定释放——但**请求本身必须有限时**：库自建的 client 装了
-     * `HttpTimeout`，而消费方注入的 client（文档鼓励注入以复用连接池）未必配了超时，
-     * 一个挂住的请求就会永久持锁，所有等锁的调用一起卡死。故 [runRound] 里用
-     * `withTimeout` 加了一道保险丝（时长见 [LoginbaseConfig.lockFuseMillis]），它刻意
-     * 宽松——职责是「别让锁永远握着」，不是替消费方决定超时值。
+     * 的 finally 保证锁必定释放——而**请求本身必有限时**：client 由本库自建，
+     * `HttpTimeout` 必然装上（见 [LoginbaseConfig.httpEngine] 为什么只收 engine 不收
+     * client）。「一个挂住的请求永久持锁、等锁的调用全部卡死」这件事因此在源头上
+     * 就不可能发生，不必再叠一层守卫。
      */
     suspend fun refresh(): RefreshOutcome {
         val existing = tokenStore.load()
@@ -371,19 +366,12 @@ class AuthClient(
      */
     private suspend fun runRound(current: TokenPair): RefreshOutcome {
         val response = try {
-            // 单飞锁的保险丝。放在这里而不是给注入的 client 装插件，见 [http] 的说明：
-            // 与消费方的超时配置正交，不派生 client、不依赖对方装了什么。
-            // 值刻意宽松——职责是「别让锁永远握着」，不是替消费方决定超时。
-            withTimeout(lockFuseMillis) {
-                http.post("$base/refresh") {
-                    contentType(ContentType.Application.Json)
-                    setBody(jsonBody(mapOf("refreshToken" to current.refreshToken)))
-                }
+            // 请求必定有限时——client 由本库自建、[installTimeout] 必然生效，所以「挂住的
+            // 请求永久持有单飞锁」这件事在源头上就不可能发生，不需要再套一层 withTimeout。
+            http.post("$base/refresh") {
+                contentType(ContentType.Application.Json)
+                setBody(jsonBody(mapOf("refreshToken" to current.refreshToken)))
             }
-        } catch (e: TimeoutCancellationException) {
-            // 保险丝熔断。它是 CancellationException 的子类，必须抢在下面那个分支前面
-            // 捕获，否则会被当成「调用方取消」抛出去。
-            return refreshFailed(LoginbaseException.Network(e))
         } catch (e: CancellationException) {
             // 只有**当前协程确实被取消**才如实传播。ktor 会在 client 的 job 被 cancel 时
             // 连带取消在途请求——消费方退登/重建 DI 时 `close()` 掉自己的 HttpClient
@@ -515,17 +503,19 @@ class AuthClient(
     }
 
     /**
-     * 关闭**库自建**的 [HttpClient]。
+     * 关闭本库的 [HttpClient]。
      *
-     * 注入进来的 client 归消费方所有，本方法**不会**碰它——那是它自己 `close()` 的事。
-     * 没走过任何 HTTP 的实例也不会因此白建一个 client（自建是惰性的）。
+     * **不会关掉你提供的 [LoginbaseConfig.httpEngine]**——ktor 的 `HttpClient(engine)`
+     * 走 `manageEngine = false`，engine 的生命周期始终归你。没给 engine 时关的是
+     * ktor 自行发现并由本库托管的那个。
+     *
+     * 没走过任何 HTTP 的实例不会因此白建一个 client（自建是惰性的）。
      *
      * 按文档把 [AuthClient] 当每进程一个的单例持有时，通常一辈子都不用调这个；
-     * 它是给测试和 DI 图重建这类会反复创建实例的场景准备的，不调就会攒下 engine
-     * 的线程池。调用之后本实例不应再使用。
+     * 它是给测试和 DI 图重建这类会反复创建实例的场景准备的。调用之后本实例不应再使用。
      */
     fun close() {
-        if (injectedHttpClient == null && httpDelegate.isInitialized()) http.close()
+        if (httpDelegate.isInitialized()) http.close()
     }
 
     // ---- 内部 ----
@@ -650,8 +640,6 @@ class AuthClient(
     }
 
     private companion object {
-        const val TIMEOUT_MS = 15_000L
-
         const val DEFAULT_COOLDOWN = 60
     }
 }

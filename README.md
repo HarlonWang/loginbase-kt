@@ -43,7 +43,7 @@ val auth = AuthClient(
     baseUrl = "https://api.example.com/auth",
     tokenStore = SharedPreferencesTokenStore(context),
 ) {
-    httpClient = myKtorClient                            // 可选，见 LoginbaseConfig；不写则库自建
+    httpEngine = myEngine                                // 可选，见 LoginbaseConfig；不写则由 ktor 发现
 }
 auth.restore()                                           // 启动时恢复登录态
 
@@ -60,6 +60,16 @@ auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新
 ```
 
 `HttpClient` 的 **engine 不由本库提供**——消费方 classpath 里要有（Android `ktor-client-okhttp` / iOS `ktor-client-darwin`），多数 KMP App 本来就有。
+
+要证书固定、走代理、加 OkHttp 拦截器，把 **engine** 传进来即可，`HttpClient` 始终由本库自建：
+
+```kotlin
+AuthClient(baseUrl, store) {
+    httpEngine = OkHttp.create { addInterceptor(...) }   // 连接池同 engine，不会多一个池
+}
+```
+
+**为什么只收 engine 不收整个 `HttpClient`**：注入 client 等于让本库最安全敏感的那条请求（`POST /refresh`）跑在一套未知插件上。ktor 的 `Auth` 插件会在 401 回调里递归调 `refresh()`，撞上不可重入的单飞锁而永久挂起；`HttpRequestRetry` 默认就是「5xx 与 IOException 重试 3 次」，单飞辛苦收敛成的 1 次刷新会被悄悄放大成 4 次——服务端若已消费掉那个 refresh token，一轮就撞穿救活护栏。而注入真正值钱的能力（证书固定、代理、抓包）全在 engine 级，交出 engine 就够了。engine 的生命周期仍归你，`AuthClient.close()` 不会关它。
 
 ### 单飞 refresh 的边界：每进程一个实例
 
@@ -79,11 +89,11 @@ auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新
 
 > Ktor 的 `Auth` 插件也内建单飞，但它只协调**装了该插件的那一个 `HttpClient`**。App 通常有多个 client（业务 API、图片、第三方），各刷各的照样烧配额——所以两者是叠加不是替代：可以在自己的 client 上装 `Auth` 插件、`refreshTokens` 回调里调 `authClient.refresh()`，由本库的锁保证全局只刷一次。
 >
-> ⚠️ **装了 `Auth` 插件的那个 client 不要注入给 `AuthClient`**（即不要设成 `LoginbaseConfig.httpClient`）。否则本库的 `POST /refresh` 也会过该插件：服务端返回 401 时插件回调里再调 `authClient.refresh()`，而当前协程已经持有单飞锁——`Mutex` 不可重入，会**永久挂起**。业务 client 与注入给本库的 client 分开即可（复用同一个 engine 没问题）。
+> 这样用是安全的——本库只收 engine、`HttpClient` 自建，你那个装了 `Auth` 插件的 client 不会参与本库的 `POST /refresh`，不存在递归调用撞上不可重入锁的问题。
 
 ## 状态
 
-核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。49 个测试。
+核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。62 个测试。
 
 ### 登录态
 
@@ -102,7 +112,7 @@ auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新
 
 ### 错误处理
 
-本库抛出的一切都挂在 `LoginbaseException` 这个 sealed 根下，**包括传输层失败**——engine 由消费方提供、ktor 只是实现细节，不该逼调用方去 catch `IOException`：
+本库抛出的一切都挂在 `LoginbaseException` 这个 sealed 根下，**包括传输层失败**——ktor 只是实现细节，不该逼调用方去 catch `IOException`：
 
 ```kotlin
 try {
@@ -142,9 +152,9 @@ localeProvider = { settings.languageTag ?: Loginbase.appLanguageTag() }
 
 **依赖最小集**：`ktor-client-core` + `kotlinx-serialization-json` + `kotlinx-coroutines-core`，**仅此三个**。
 
-- 不用 `ktor-client-content-negotiation` / `ktor-serialization-kotlinx-json`：请求体手工序列化、响应手工解析，注入的 `HttpClient` 因此不需要任何插件配置
+- 不用 `ktor-client-content-negotiation` / `ktor-serialization-kotlinx-json`：请求体手工序列化、响应手工解析
 - 不用 `multiplatform-settings`：存两个字符串而已，平台实现各十几行（Android `SharedPreferences`、iOS `NSUserDefaults`），且**落盘的同步性是与服务端救活机制配套的关键语义，不该藏在第三方库的默认参数里**
-- 不带 HTTP engine：消费方提供
+- 不带 HTTP engine：消费方提供（`HttpClient` 由库自建，见上）
 - **不含 UI**：登录界面归各 App 实现
 
 加任何新依赖前先停下来问一遍值不值——auth 库是供应链攻击的最高价值目标。

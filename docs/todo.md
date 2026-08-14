@@ -4,7 +4,7 @@
 >
 > **范围约定**：iOS 长期只做占位，不承诺可用，故 iOS 侧的 Swift 互操作、`NSUserDefaultsTokenStore`、`PlatformLocale.ios.kt` 的功能性问题一律不计。`explicitApi()` 的取舍见第 37 条（已决定不开，代价与缓解手段记录在案）。
 >
-> 共 35 条。P0 是「只有发 1.0 前这一个窗口」的破坏性变更，优先级高于 P1 的正确性 bug。
+> 共 36 条。P0 是「只有发 1.0 前这一个窗口」的破坏性变更，优先级高于 P1 的正确性 bug。
 
 ---
 
@@ -281,6 +281,21 @@
 - **问题**：`name.set("HarlanWang")`，而 `id` 是 `HarlonWang`、仓库和 URL 也都是 `HarlonWang`。这会进入 Maven Central 的永久元数据。
 - **修法**：改成 `HarlonWang`。
 - **落地**：已改，并跑 `generatePomFileForKotlinMultiplatformPublication` 核对了实际产出的 pom-default.xml。
+
+---
+
+### [x] 38. 只收 engine，不再接受注入整个 `HttpClient`（设计决策）
+
+- **位置**：`LoginbaseConfig.httpEngine`、`AuthClient` 的 client 构建
+- **背景**：注入 `HttpClient` 这一个决定，在本轮审查里直接产生了四条待办（#13 engine refcount、#14 超时判据失灵、#15 `Auth` 插件死锁、#22 `close()` 要分辨归属）。
+- **讨论中发现的第五颗地雷**：ktor `HttpRequestRetry` 的默认配置就是「5xx 与 IOException 重试 3 次」（`HttpRequestRetry.kt:75-78`）。消费方只要装了它并注入那个 client，单飞辛苦收敛成的 1 次刷新会在库看不见的地方被放大成 4 次——服务端若已消费掉那个 refresh token，一轮就撞穿 1h/3 次救活护栏。**此前没有任何文档警告过。**
+- **评估过的三个方案**：
+  - **A 注入 client（原状）**：读代码要同时记住 6 条，其中 3 条是「消费方必须记得」
+  - **B 完全内置、不给注入**：只剩 2 条，但**证书固定、代理、消费方的集成测试全部做不了**；且库自己的测试仍需要一个 `internal` 注入口，所以 `injected ?: 自建` 那个分支根本删不掉——B 相对 C 省下的几乎全是文档
+  - **C 只收 engine**：3 条，且全是库内部的事
+- **决定：C**。真正的复杂度断崖在 A→C（消灭了三条「消费方必须记得」），C→B 只再少一条良性的，却要关掉一个 auth 库最不该关掉的能力。
+- **落地**：`httpClient` → `httpEngine`；`HttpClient` 一律由库自建（传 engine 时走 `manageEngine = false`，`close()` 不碰消费方的 engine）。
+- **顺带删掉的**：`withTimeout` 保险丝与 `lockFuseMillis`——它们的前提是「注入的 client 未必配了超时」，库自建之后 `HttpTimeout` 必然生效，这个前提不存在了。README 里「不要注入装了 `Auth` 插件的 client」那段警告也删了：**好设计让警告消失，而不是把警告写得更醒目。**
 
 ---
 

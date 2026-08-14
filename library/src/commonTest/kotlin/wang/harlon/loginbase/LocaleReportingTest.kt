@@ -1,6 +1,5 @@
 package wang.harlon.loginbase
 
-import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
@@ -39,7 +38,7 @@ class LocaleReportingTest {
             )
         }
         return AuthClient(BASE_URL, InMemoryTokenStore()) {
-            httpClient = HttpClient(engine)
+            httpEngine = engine
             // 不配 provider 时保持缺省（跟随系统），这正是「两条规则」里的第一条
             if (localeProvider != null) this.localeProvider = localeProvider
         }
@@ -100,7 +99,7 @@ class LocaleReportingTest {
         }
         var escaped: LoginbaseConfig? = null
         val client = AuthClient(BASE_URL, InMemoryTokenStore()) {
-            httpClient = HttpClient(engine)
+            httpEngine = engine
             localeProvider = { "en" }
             escaped = this
         }

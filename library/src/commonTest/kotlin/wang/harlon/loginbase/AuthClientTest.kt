@@ -41,13 +41,13 @@ private fun clientWith(
 ): Pair<AuthClient, MockEngine> {
     val engine = MockEngine(handler)
     return AuthClient(BASE, store) {
-        httpClient = HttpClient(engine)
-        lockFuseMillis = TEST_FUSE_MS
+        httpEngine = engine
+        timeoutMillis = TEST_TIMEOUT_MS
     } to engine
 }
 
-/** 保险丝在测试里调小：见下面 [authTest] 关于时钟的说明 */
-private const val TEST_FUSE_MS = 2_000L
+/** 超时在测试里调小，否则「请求挂住」的用例要真等 15 秒 */
+private const val TEST_TIMEOUT_MS = 2_000L
 
 /**
  * 跑在**真实时钟**上的测试。
@@ -204,24 +204,22 @@ class AuthClientTest {
     // ---- 保险丝与取消语义 ----
 
     @Test
-    fun `注入的 client 只配了 connectTimeout，保险丝仍然生效`() = authTest {
-        // 旧判据是「装没装 HttpTimeout 插件」。而 HttpTimeoutConfig 三个字段互相独立：
-        // 只配 connectTimeout 的 client 插件是装着的，于是保险丝被跳过，但请求连上
-        // 之后服务端不回照样无限挂住、锁永久被持有——正是保险丝声称要消灭的形态。
+    fun `只提供 engine 时，库自己的超时必然生效`() = authTest {
+        // 只收 engine、client 由库自建，带来的确定性就在这里：超时行为不取决于消费方
+        // 配了什么。此前收整个 client 时，得靠 pluginOrNull(HttpTimeout) 去猜，而
+        // HttpTimeoutConfig 三个字段互相独立——只配 connectTimeout 的 client 插件是
+        // 装着的，判据失效，请求连上之后照样能无限挂住、把单飞锁永久握死。
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
-        val engine = MockEngine {
-            delay(60_000)
-            respond("", HttpStatusCode.OK)
-        }
         val client = AuthClient(BASE, store) {
-            httpClient = HttpClient(engine) {
-                install(HttpTimeout) { connectTimeoutMillis = 60_000 }
+            httpEngine = MockEngine {
+                delay(60_000) // 服务端永远不回
+                respond("", HttpStatusCode.OK)
             }
-            lockFuseMillis = 300
+            timeoutMillis = 300
         }
 
         assertIs<RefreshOutcome.Failed>(client.refresh())
-        assertNotNull(store.load(), "熔断只是这次没刷成，会话好好的")
+        assertNotNull(store.load(), "超时只是这次没刷成，会话好好的")
     }
 
     @Test
@@ -448,21 +446,20 @@ class AuthClientTest {
     }
 
     @Test
-    fun `请求挂住时保险丝熔断，且锁必须放开`() = authTest {
-        // 消费方注入的 HttpClient 没配超时（库自建的才装 HttpTimeout）→ 请求久久不返回。
-        // 没有这道保险丝的话，挂住的请求会永久持有单飞锁，把所有等锁的调用一起拖死
-        // ——Supabase 的孤儿锁故障就是这个形态。
+    fun `请求挂住时超时生效，且锁必须放开`() = authTest {
+        // 服务端久久不返回。没有超时的话，挂住的请求会永久持有单飞锁，把所有等锁的
+        // 调用一起拖死——Supabase 的孤儿锁故障就是这个形态。
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         var hang = true
         val (client, _) = clientWith(store) {
-            if (hang) delay(120_000) // 比 REFRESH_TIMEOUT_MS 长
+            if (hang) delay(120_000) // 远长于 TEST_TIMEOUT_MS
             respond("""{"accessToken":"a1","refreshToken":"r1"}""", HttpStatusCode.OK, jsonHeaders())
         }
 
         assertIs<RefreshOutcome.Failed>(client.refresh())
         assertNotNull(store.load(), "只是这次没刷成，会话好好的，绝不能清")
 
-        // 锁真的放开了才能有下一次——这才是这道保险丝的意义
+        // 锁真的放开了才能有下一次——这才是这条超时的意义
         hang = false
         assertIs<RefreshOutcome.Success>(client.refresh())
         assertEquals("r1", store.load()?.refreshToken)
@@ -780,20 +777,21 @@ class AuthClientTest {
     }
 
     @Test
-    fun `close 只关自建的 client，不碰注入的`() = authTest {
+    fun `close 不碰消费方提供的 engine`() = authTest {
         // 注入的 client 归消费方所有，关掉它等于替对方做主——对方可能还在用同一个
         // engine 发业务请求
-        val injected = HttpClient(MockEngine { respond("", HttpStatusCode.OK) })
-        val client = AuthClient(BASE, InMemoryTokenStore()) { httpClient = injected }
+        val engine = MockEngine { respond("", HttpStatusCode.OK) }
+        val client = AuthClient(BASE, InMemoryTokenStore()) { httpEngine = engine }
 
         client.close()
 
-        // 还能正常用就说明没被关掉
+        // engine 归消费方所有：ktor 的 HttpClient(engine) 走 manageEngine = false，
+        // 关掉库的 client 不该波及它——对方可能还在用同一个 engine 发业务请求
         assertNull(client.accessToken())
         assertEquals(
             HttpStatusCode.OK,
-            injected.get("https://example.com/ping").status,
-            "注入的 client 必须还活着",
+            HttpClient(engine).get("https://example.com/ping").status,
+            "消费方的 engine 必须还活着",
         )
     }
 
