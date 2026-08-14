@@ -113,6 +113,27 @@ class AuthClientTest {
     }
 
     @Test
+    fun `请求挂住时保险丝熔断，且锁必须放开`() = runTest {
+        // 消费方注入的 HttpClient 没配超时（库自建的才装 HttpTimeout）→ 请求久久不返回。
+        // 没有这道保险丝的话，挂住的请求会永久持有单飞锁，把所有等锁的调用一起拖死
+        // ——Supabase 的孤儿锁故障就是这个形态。
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        var hang = true
+        val (client, _) = clientWith(store) {
+            if (hang) delay(120_000) // 比 REFRESH_TIMEOUT_MS 长
+            respond("""{"accessToken":"a1","refreshToken":"r1"}""", HttpStatusCode.OK, jsonHeaders())
+        }
+
+        assertIs<RefreshOutcome.Failed>(client.refresh())
+        assertNotNull(store.load(), "只是这次没刷成，会话好好的，绝不能清")
+
+        // 锁真的放开了才能有下一次——这才是这道保险丝的意义
+        hang = false
+        assertIs<RefreshOutcome.Success>(client.refresh())
+        assertEquals("r1", store.load()?.refreshToken)
+    }
+
+    @Test
     fun `5xx 不清会话`() = runTest {
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         val (client, _) = clientWith(store) { respondError(HttpStatusCode.InternalServerError) }
