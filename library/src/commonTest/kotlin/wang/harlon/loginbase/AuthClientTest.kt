@@ -1,6 +1,7 @@
 package wang.harlon.loginbase
 
 import io.ktor.client.HttpClient
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.MockRequestHandler
@@ -10,11 +11,17 @@ import io.ktor.client.request.HttpResponseData
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -32,7 +39,25 @@ private fun clientWith(
     handler: MockRequestHandler,
 ): Pair<AuthClient, MockEngine> {
     val engine = MockEngine(handler)
-    return AuthClient(BASE, store) { httpClient = HttpClient(engine) } to engine
+    return AuthClient(BASE, store) {
+        httpClient = HttpClient(engine)
+        lockFuseMillis = TEST_FUSE_MS
+    } to engine
+}
+
+/** 保险丝在测试里调小：见下面 [authTest] 关于时钟的说明 */
+private const val TEST_FUSE_MS = 2_000L
+
+/**
+ * 跑在**真实时钟**上的测试。
+ *
+ * 单飞锁的保险丝走 `withTimeout`，用的是协程的时钟。`runTest` 的虚拟时钟在测试协程
+ * 一挂起时就会把时间跳到下一个定时事件——而 MockEngine 跑在真实 dispatcher 上，于是
+ * 每次请求都会「瞬间」熔断。切到真实 dispatcher 后行为与生产一致，副产品是 8 个并发
+ * 调用真的并行，单飞逻辑得到的是更硬的验证。
+ */
+private fun authTest(body: suspend CoroutineScope.() -> Unit) = runTest {
+    withContext(Dispatchers.Default) { body() }
 }
 
 class AuthClientTest {
@@ -40,7 +65,7 @@ class AuthClientTest {
     // ---- 单飞 refresh：护栏预算的客户端前提 ----
 
     @Test
-    fun `并发 refresh 只打一次服务端`() = runTest {
+    fun `并发 refresh 只打一次服务端`() = authTest {
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         var calls = 0
         val (client, _) = clientWith(store) {
@@ -64,7 +89,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `并发刷新失败时也只打一次服务端`() = runTest {
+    fun `并发刷新失败时也只打一次服务端`() = authTest {
         // 单飞不能只共享成功。失败时存储纹丝不动，等待者看到的世界和「一次刷新都没
         // 发生过」一样——若据此各自再发一次，服务端在回执丢失的情况下会把每一次都
         // 判成「拿已作废令牌来刷」，几轮就撞穿 1h/3 次救活护栏、整条会话按盗用撤销。
@@ -84,7 +109,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `会话被撤销时，等待者拿到的是 SessionEnded 而不是降级的 NoSession`() = runTest {
+    fun `会话被撤销时，等待者拿到的是 SessionEnded 而不是降级的 NoSession`() = authTest {
         // 复用判断必须排在「读存储」之前。排在之后的话，第一个调用方清掉存储后，
         // 等待者会掉进锁内的 NoSession 早返回，撤销归因就丢了——UI 分不清
         // 「会话被撤销」和「本来就没登录」
@@ -110,7 +135,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `一轮结束之后才来的调用方仍会发起真实刷新`() = runTest {
+    fun `一轮结束之后才来的调用方仍会发起真实刷新`() = authTest {
         // 共享的边界是「同一批等待者」，不是「缓存上次结果」。否则一次失败会把后续
         // 所有刷新永久钉死在那个失败上，网络恢复了也起不来
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
@@ -132,7 +157,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `刷新成功先落盘再宣告成功`() = runTest {
+    fun `刷新成功先落盘再宣告成功`() = authTest {
         // save 抛异常 = 没存住。此时必须报失败：若宣告成功而实际没存，
         // 下次会拿旧令牌去刷，正好触发服务端救活（有护栏）
         val store = object : TokenStore {
@@ -155,6 +180,69 @@ class AuthClientTest {
         // 这和「没连上」的处置完全不同
         val cause = assertIs<LoginbaseException.Storage>(outcome.cause)
         assertIs<IllegalStateException>(cause.cause, "原始异常要留在 cause 里可排查")
+    }
+
+    // ---- 保险丝与取消语义 ----
+
+    @Test
+    fun `注入的 client 只配了 connectTimeout，保险丝仍然生效`() = authTest {
+        // 旧判据是「装没装 HttpTimeout 插件」。而 HttpTimeoutConfig 三个字段互相独立：
+        // 只配 connectTimeout 的 client 插件是装着的，于是保险丝被跳过，但请求连上
+        // 之后服务端不回照样无限挂住、锁永久被持有——正是保险丝声称要消灭的形态。
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        val engine = MockEngine {
+            delay(60_000)
+            respond("", HttpStatusCode.OK)
+        }
+        val client = AuthClient(BASE, store) {
+            httpClient = HttpClient(engine) {
+                install(HttpTimeout) { connectTimeoutMillis = 60_000 }
+            }
+            lockFuseMillis = 300
+        }
+
+        assertIs<RefreshOutcome.Failed>(client.refresh())
+        assertNotNull(store.load(), "熔断只是这次没刷成，会话好好的")
+    }
+
+    @Test
+    fun `client 侧的取消归为 Failed，不冒充调用方取消`() = authTest {
+        // ktor 在 client 的 job 被 cancel 时会连带取消在途请求——消费方退登/重建 DI 时
+        // close() 掉自己的 HttpClient 就是这个形态。那个 CancellationException 与调用方
+        // 无关，原样抛出会让调用方的 launch 当成「自己被取消」而静默丢弃，UI 永远等不到
+        // 结果。判据是「当前协程还活着吗」。
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        val (client, _) = clientWith(store) { throw CancellationException("client closed") }
+
+        val outcome = client.refresh()
+        assertIs<RefreshOutcome.Failed>(outcome)
+        assertIs<LoginbaseException.Network>(outcome.cause)
+        assertNotNull(store.load(), "绝不因此清会话")
+    }
+
+    @Test
+    fun `signOut 被取消时本地登出照样完成，取消如实向上传播`() = authTest {
+        // 用户点了登出，中途界面销毁、协程被取消，结果还登录着——最难排查的一类状态
+        // 不一致。本地清除包在 NonCancellable 里必定完成；取消随后照常传播，调用方的
+        // 协程正常结束，而不是被伪装成「登出成功」。
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        val deleteArrived = CompletableDeferred<Unit>()
+        val (client, _) = clientWith(store) {
+            deleteArrived.complete(Unit)
+            delay(60_000) // 服务端永远不回
+            respond("", HttpStatusCode.OK)
+        }
+
+        val job = launch { client.signOut() }
+        deleteArrived.await()
+        job.cancelAndJoin()
+
+        assertTrue(job.isCancelled, "取消要如实传播，不能被吞成登出成功")
+        assertNull(store.load(), "取消也拦不住本地登出")
+        assertEquals(
+            AuthState.SignedOut(SignOutReason.UserInitiated),
+            client.authState.value,
+        )
     }
 
     // ---- 登出与在途刷新的竞态 ----
@@ -183,7 +271,7 @@ class AuthClientTest {
     }.first
 
     @Test
-    fun `在途刷新的响应不得复活刚登出的会话`() = runTest {
+    fun `在途刷新的响应不得复活刚登出的会话`() = authTest {
         // 原 bug：refresh 请求在飞 → 用户点登出、存储被清 → 响应到达 → persist 把新
         // 轮换的令牌写回去并置 SignedIn。用户点了登出，半秒后又登录着，手里还是一对
         // 服务端刚发的有效令牌。
@@ -211,7 +299,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `登出与刷新竞争时，401 不得把「主动登出」改写成「登录已失效」`() = runTest {
+    fun `登出与刷新竞争时，401 不得把「主动登出」改写成「登录已失效」`() = authTest {
         // signOut 的 DELETE /sessions 与在途的 POST /refresh 是并发的。DELETE 先到服务端
         // 把会话删掉，这次刷新就会收到 401——但用户是**自己点的登出**，把原因改写成
         // SessionEnded 会让 UI 弹「登录已失效，请重新登录」，是骚扰。
@@ -240,7 +328,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `没有并发登出时，刷新照常落盘`() = runTest {
+    fun `没有并发登出时，刷新照常落盘`() = authTest {
         // 重读比对的反面：会话没被动过就必须正常落盘，别把守卫写成永远丢弃
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         val gate = RefreshGate()
@@ -261,7 +349,7 @@ class AuthClientTest {
     // ---- 会话失效判定：只有服务端明说才清 ----
 
     @Test
-    fun `401 invalid_refresh_token 才清会话`() = runTest {
+    fun `401 invalid_refresh_token 才清会话`() = authTest {
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         val (client, _) = clientWith(store) {
             respond(
@@ -284,7 +372,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `网络失败不清会话——弱网用户不该被踢下线`() = runTest {
+    fun `网络失败不清会话——弱网用户不该被踢下线`() = authTest {
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         val (client, _) = clientWith(store) { throw RuntimeException("network down") }
 
@@ -298,7 +386,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `刷新失败置 RefreshFailed，下次刷成功自动回到 SignedIn`() = runTest {
+    fun `刷新失败置 RefreshFailed，下次刷成功自动回到 SignedIn`() = authTest {
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         var down = true
         val (client, _) = clientWith(store) {
@@ -317,7 +405,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `会话被撤销后，迟到的刷新失败不能把原因盖掉`() = runTest {
+    fun `会话被撤销后，迟到的刷新失败不能把原因盖掉`() = authTest {
         // 幂等防御路径的坑：SessionEnded 若被改写成 NoSession 或 RefreshFailed，
         // UI 就再也弹不出「登录已失效」，用户只会莫名其妙被扔回登录页
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
@@ -341,7 +429,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `请求挂住时保险丝熔断，且锁必须放开`() = runTest {
+    fun `请求挂住时保险丝熔断，且锁必须放开`() = authTest {
         // 消费方注入的 HttpClient 没配超时（库自建的才装 HttpTimeout）→ 请求久久不返回。
         // 没有这道保险丝的话，挂住的请求会永久持有单飞锁，把所有等锁的调用一起拖死
         // ——Supabase 的孤儿锁故障就是这个形态。
@@ -362,7 +450,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `5xx 不清会话`() = runTest {
+    fun `5xx 不清会话`() = authTest {
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         val (client, _) = clientWith(store) { respondError(HttpStatusCode.InternalServerError) }
 
@@ -373,7 +461,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `refresh 响应缺 token 字段——两端对不上，不是「服务端说不行」`() = runTest {
+    fun `refresh 响应缺 token 字段——两端对不上，不是「服务端说不行」`() = authTest {
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         val (client, _) = clientWith(store) {
             respond("""{"ok":true}""", HttpStatusCode.OK, jsonHeaders())
@@ -389,7 +477,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `未知 reason 仍按会话终结处理，落到 UNKNOWN`() = runTest {
+    fun `未知 reason 仍按会话终结处理，落到 UNKNOWN`() = authTest {
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         val (client, _) = clientWith(store) {
             respond(
@@ -404,7 +492,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `无本地令牌时 refresh 返回 NoSession`() = runTest {
+    fun `无本地令牌时 refresh 返回 NoSession`() = authTest {
         val (client, _) = clientWith(InMemoryTokenStore()) { respondError(HttpStatusCode.BadRequest) }
         assertIs<RefreshOutcome.NoSession>(client.refresh())
     }
@@ -412,7 +500,7 @@ class AuthClientTest {
     // ---- 邮箱验证码 ----
 
     @Test
-    fun `verifyCode 成功即落盘并置登录态，透传 isNewUser 与 user`() = runTest {
+    fun `verifyCode 成功即落盘并置登录态，透传 isNewUser 与 user`() = authTest {
         val store = InMemoryTokenStore()
         val (client, _) = clientWith(store) {
             respond(
@@ -431,7 +519,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `sendCode 用服务端给的 cooldownSeconds`() = runTest {
+    fun `sendCode 用服务端给的 cooldownSeconds`() = authTest {
         val (client, _) = clientWith(InMemoryTokenStore()) {
             respond("""{"cooldownSeconds":90}""", HttpStatusCode.OK, jsonHeaders())
         }
@@ -439,7 +527,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `限流错误带 retryAfterSeconds`() = runTest {
+    fun `限流错误带 retryAfterSeconds`() = authTest {
         val (client, _) = clientWith(InMemoryTokenStore()) {
             respond(
                 """{"error":"too_many_requests","retryAfterSeconds":42}""",
@@ -453,7 +541,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `验证码错误映射到协议错误码`() = runTest {
+    fun `验证码错误映射到协议错误码`() = authTest {
         val (client, _) = clientWith(InMemoryTokenStore()) {
             respond("""{"error":"invalid_code"}""", HttpStatusCode.BadRequest, jsonHeaders())
         }
@@ -462,7 +550,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `服务端新增错误码不炸，落 UNKNOWN 且保留原串`() = runTest {
+    fun `服务端新增错误码不炸，落 UNKNOWN 且保留原串`() = authTest {
         val (client, _) = clientWith(InMemoryTokenStore()) {
             respond("""{"error":"some_future_error"}""", HttpStatusCode.BadRequest, jsonHeaders())
         }
@@ -505,7 +593,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `exchangeOtc 换到令牌即落盘`() = runTest {
+    fun `exchangeOtc 换到令牌即落盘`() = authTest {
         val store = InMemoryTokenStore()
         val (client, _) = clientWith(store) {
             respond("""{"accessToken":"a1","refreshToken":"r1"}""", HttpStatusCode.OK, jsonHeaders())
@@ -515,7 +603,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `linkUrl 需要已登录，且带 Bearer`() = runTest {
+    fun `linkUrl 需要已登录，且带 Bearer`() = authTest {
         // 未登录直接抛，不白打一次服务端。用专用类型而非 IllegalStateException：
         // UI 状态与实际会话可能短暂不同步，调用方要能单独 catch 它去引导登录
         val anonymous = AuthClient(BASE, InMemoryTokenStore())
@@ -535,7 +623,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `非协议响应体（网关 HTML 错误页）仍给出可诊断信息`() = runTest {
+    fun `非协议响应体（网关 HTML 错误页）仍给出可诊断信息`() = authTest {
         // Cloudflare 5xx 错误页、空体等——解析不出 error 字段时不能只留个空串
         val (client, _) = clientWith(InMemoryTokenStore()) {
             respond("<html>502 Bad Gateway</html>", HttpStatusCode.BadGateway, headersOf(HttpHeaders.ContentType, "text/html"))
@@ -549,7 +637,7 @@ class AuthClientTest {
     // ---- 异常契约：一个根，且不泄漏 ktor ----
 
     @Test
-    fun `传输层异常包成 Network，不把 ktor 类型泄漏给调用方`() = runTest {
+    fun `传输层异常包成 Network，不把 ktor 类型泄漏给调用方`() = authTest {
         // engine 由消费方提供、ktor 只是实现细节，不该逼调用方去 catch ktor 的异常层次
         val (client, _) = clientWith(InMemoryTokenStore()) { throw RuntimeException("dns fail") }
 
@@ -558,7 +646,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `2xx 但响应形状不对，归 MalformedResponse 而非 Api`() = runTest {
+    fun `2xx 但响应形状不对，归 MalformedResponse 而非 Api`() = authTest {
         // Api = 服务端明确拒绝，用户看错误提示；MalformedResponse = 两端对不上，
         // 用户重试多少次都一样，该报给开发者。混成一类调用方就没法分流
         val (verify, _) = clientWith(InMemoryTokenStore()) {
@@ -583,7 +671,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `所有失败都能被 LoginbaseException 一网打尽`() = runTest {
+    fun `所有失败都能被 LoginbaseException 一网打尽`() = authTest {
         // 这个测试就是根类型存在的理由：调用方写一个 catch 就能兜住「这次没成」，
         // 不必同时认识 Api、Network、NotAuthenticated 三套不相干的类型
         val api = clientWith(InMemoryTokenStore()) {
@@ -608,7 +696,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `等锁期间会话被登出，refresh 返回 NoSession 且状态为登出`() = runTest {
+    fun `等锁期间会话被登出，refresh 返回 NoSession 且状态为登出`() = authTest {
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         val (client, _) = clientWith(store) {
             respond("""{"accessToken":"a1","refreshToken":"r1"}""", HttpStatusCode.OK, jsonHeaders())
@@ -623,7 +711,7 @@ class AuthClientTest {
     // ---- 登出与恢复 ----
 
     @Test
-    fun `signOut 即使服务端失败也清本地`() = runTest {
+    fun `signOut 即使服务端失败也清本地`() = authTest {
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         val (client, _) = clientWith(store) { throw RuntimeException("offline") }
 
@@ -637,7 +725,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `restore 从存储恢复登录态`() = runTest {
+    fun `restore 从存储恢复登录态`() = authTest {
         val signedIn = AuthClient(BASE, InMemoryTokenStore(TokenPair("a", "r")))
         assertEquals(AuthState.Unknown, signedIn.authState.value)
         assertEquals(AuthState.SignedIn, signedIn.restore())
@@ -647,7 +735,7 @@ class AuthClientTest {
     }
 
     @Test
-    fun `accessToken forceRefresh 走刷新，失败返回 null`() = runTest {
+    fun `accessToken forceRefresh 走刷新，失败返回 null`() = authTest {
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         val (ok, _) = clientWith(store) {
             respond("""{"accessToken":"a9","refreshToken":"r9"}""", HttpStatusCode.OK, jsonHeaders())

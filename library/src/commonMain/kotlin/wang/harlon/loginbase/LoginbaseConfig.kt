@@ -42,4 +42,20 @@ class LoginbaseConfig internal constructor() {
      * 不是「不要发」。想一律某种语言就返回定值，如 `{ "en" }`。
      */
     var localeProvider: () -> String? = Loginbase::appLanguageTag
+
+    /**
+     * 单飞锁保险丝的时长，见 [AuthClient.refresh]。**`internal`，不对外开放**——
+     * 它的职责是「别让锁永远握着」，不是替消费方决定超时值，那件事该由消费方在自己的
+     * `HttpClient` 上配 `requestTimeoutMillis`。
+     *
+     * 存在的唯一理由是**让测试能把它调小**：保险丝走 `withTimeout`，用的是协程的时钟，
+     * 测试里必须跑在真实时钟上（`runTest` 的虚拟时钟会直接跳过 45 秒），若不能调小，
+     * 一个熔断用例就要真等 45 秒。
+     */
+    internal var lockFuseMillis: Long = DEFAULT_LOCK_FUSE_MILLIS
+
+    internal companion object {
+        // 刻意宽松：它是兜底，不是超时策略
+        const val DEFAULT_LOCK_FUSE_MILLIS: Long = 45_000L
+    }
 }

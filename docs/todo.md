@@ -110,31 +110,36 @@
 - **没走「经典单飞」（共享 `Deferred` + 内部 CoroutineScope）**：那要引入一个自建 scope，刷新任务脱离调用方协程、取消语义整个变掉，还牵出至今没有的 `close()`。轮次计数一把新锁都不用加。
 - **测试**：3 条（失败也只打一次、等待者拿到 `SessionEnded` 而非降级的 `NoSession`、一轮结束后新调用方仍发真实请求）。**要点 1 和 2 都做了反向验证**：分别破坏后，对应测试精确变红（要点 1 还连带弄红了原有的成功用例）。
 
-### [ ] 11. `CancellationException` 在 4 处被吞
+### [x] 11. `CancellationException` 在 4 处被吞 — 已完成
 
 - **位置**：~~`AuthClient.kt:289`（`persist` 外的 `catch (e: Exception)`）~~ 已随第 2 条修掉；剩 `parseJsonOrNull` 的 `runCatching`、`signOut` / `signOutAll` 的两处 `runCatching`
 - **问题**：`:255` 刚立下「取消必须如实传播」的规矩，同一函数里 `persist(tokens)` 的 `catch (e: Exception)` 却会捕获它并转成 `Failed`——已取消的协程正常返回，破坏结构化并发。`runCatching` 捕获 `Throwable`，问题相同。
 - **修法**：各处补 `catch (e: CancellationException) { throw e }`，或换成显式 `try/catch` 只捕获具体类型。
 
-### [ ] 12. 无条件 rethrow 把两种取消混为一谈
+- **落地**：`parseJsonOrNull` 改成显式 `try/catch`，只吞 `SerializationException` 与读体失败；`signOut`/`signOutAll` 合并成 `signOutInternal`，DELETE 的取消如实传播，而**本地清除放进 `finally` + `NonCancellable`**——用户点了登出、中途协程被取消却还登录着，是最难排查的一类状态不一致。取消随后照常向上传播，调用方协程正常结束而非被伪装成「登出成功」。
+### [x] 12. 无条件 rethrow 把两种取消混为一谈 — 已完成
 
 - **位置**：`AuthClient.kt:255`
 - **问题**：ktor 的 `HttpRequestLifecycle` 会在 client job 被 cancel 时连带取消在途请求。消费方退登/重建 DI 时 `cancel()` 自己的 HttpClient，此刻在飞的 refresh 会抛出一个**与调用方无关**的 `CancellationException`，被原样抛出后调用方的 `launch` 当成自己被取消而静默丢弃，UI 永远等不到 `Failed`。
 - **修法**：加 `currentCoroutineContext().ensureActive()` 守卫——只有当前协程确实被取消才 rethrow，否则归 `Failed`。
 
-### [ ] 13. `injected.config {}` 让消费方的 `client.close()` 关不掉 engine
+- **落地**：`runRound` 的 HTTP 分支加 `currentCoroutineContext().ensureActive()` 守卫，当前协程还活着就归 `Failed(Network)`。`persist` 那处**刻意不加**同样的守卫：`TokenStore` 是我们直接调用的，没有第三方能从旁边取消它，那里的取消必然来自调用方本身。
+### [x] 13. `injected.config {}` 让消费方的 `client.close()` 关不掉 engine — 已完成
 
 - **位置**：`AuthClient.kt:103`
 - **问题**：ktor 的 `HttpClient.config()` 把 `manageEngine` 原样传给派生 client，构造时 `engine.clientRefCount.incrementAndGet()`。消费方注入 `HttpClient(OkHttp){}` 后 refcount 1→2，消费方 close 只降到 1，engine 永不关闭；派生 client 从不 close，refcount 回不到 0。DI 重建/登出关 client 时 OkHttp 线程泄漏。
 - **修法**：改成在 `refresh()` 里用 `withTimeout` 包一层，与消费方的 client 配置正交，同时顺带解决第 14 条。
 
-### [ ] 14. `pluginOrNull(HttpTimeout)` 判据太粗
+- **落地**：不再派生 client，注入的 `HttpClient` 原样使用；保险丝改在 `runRound` 里用 `withTimeout` 实现。与第 14 条是同一处修改。
+### [x] 14. `pluginOrNull(HttpTimeout)` 判据太粗 — 已完成
 
 - **位置**：`AuthClient.kt:100`
 - **问题**：`HttpTimeoutConfig` 三个字段互相独立且默认 null，只有 `requestTimeoutMillis` 约束整次调用总时长。消费方只配了 `connectTimeoutMillis`（很常见）时插件存在、保险丝被跳过，连上之后服务端不回照样无限挂住、**锁永久被持有**——正是这段代码声称要消灭的形态。
 - **修法**：同第 13 条改 `withTimeout` 一并解决；若保留现方案，至少改判 `requestTimeoutMillis` 而非插件是否存在。
 
-### [ ] 15. README 建议的 Auth 插件用法会死锁
+- **落地**：随第 13 条一起——`withTimeout` 与消费方的 client 配置完全正交，既不派生 client，也不依赖对方装了什么插件、配了哪几个字段。
+- **代价（意外发现）**：`withTimeout` 用的是协程时钟，而 `runTest` 的虚拟时钟会在测试协程一挂起时跳到下一个定时事件，MockEngine 又跑在真实 dispatcher 上——**所有 refresh 测试都会瞬间熔断**。故新增 `authTest {}` 把用例切到真实 dispatcher，并把保险丝时长做成 `internal` 可配（`LoginbaseConfig.lockFuseMillis`）。副产品：整套测试 2.7 秒，最慢用例 45 秒 → 2 秒，第 29 条一并解决；且 8 个并发调用现在是真并行，单飞逻辑得到更硬的验证。
+### [x] 15. README 建议的 Auth 插件用法会死锁 — 已完成
 
 - **位置**：`README.md:64`
 - **问题**：建议消费方在自己的 client 上装 ktor `Auth` 插件、`refreshTokens` 回调里调 `authClient.refresh()`；而文档另一处鼓励注入同一个 client 复用连接池。两者组合后，本库的 `POST /refresh` 也会过该插件，服务端返回 401 时插件回调 `authClient.refresh()`，当前协程已持有 `refreshMutex`——`Mutex` 不可重入，`withLock` 永久挂起。
@@ -144,6 +149,7 @@
 
 ## P2 — 健壮性与一致性（9 条）
 
+- **落地**：README 那段加了 ⚠️ 块，明确「装了 `Auth` 插件的 client 不要注入给 `AuthClient`」并说明死锁成因（`Mutex` 不可重入）。`LoginbaseConfig.httpClient` 的 KDoc 里已有同样的警告。
 ### [ ] 16. `.jsonPrimitive.int` 会抛错并掩盖真实的 API 错误
 
 - **位置**：`AuthClient.kt:139` `:353`（另 `:266` `:346` `:373` `:384` 同类）
@@ -228,12 +234,13 @@
 - **问题**：不解析 JWT 的决策成立（`AuthClient.kt:50` 的时钟偏差理由很扎实），但代价是**每次冷启动第一个请求必然 401 → 多一次往返 + 一次刷新配额**。Auth0 的 `CredentialsManager.getCredentials(minTtl)` 主动刷新正是为了省掉这个。
 - **修法**：让服务端在 verify/refresh 响应里返回 `expiresIn`（**相对秒数**）。相对时长天然不受设备时钟偏差影响，两个好处能同时拿到。
 
-### [ ] 29. 有个测试真实耗时 45 秒
+### [x] 29. 有个测试真实耗时 45 秒 — 已完成（随第 14 条）
 
 - **位置**：`library/src/commonTest/kotlin/wang/harlon/loginbase/AuthClientTest.kt:116`
 - **问题**：其余 33 个测试合计约 0.2s。`MockEngine` 与 `HttpTimeout` 的 killer 协程都跑在 `ioDispatcher()`，不是 `runTest` 的虚拟时间调度器，所以是墙钟时间；已占掉 `runTest` 默认 60s 超时的 75%，机器抖动时会假失败。
 - **修法**：把熔断值做成 `internal` 可注入参数，测试传小值。
 
+- **落地**：保险丝时长做成 `internal` 可配后，熔断用例从 45 秒降到 2 秒；整套测试合计 2.7 秒。原修法（把 fuse 值做成可注入参数）正是这么做的，只是触发它的是第 14 条的改动。
 ### [ ] 30. 补两个缺失的并发测试
 
 - **位置**：`AuthClientTest.kt`

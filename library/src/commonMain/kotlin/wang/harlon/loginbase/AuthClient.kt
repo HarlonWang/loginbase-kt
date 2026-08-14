@@ -3,7 +3,6 @@ package wang.harlon.loginbase
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
-import io.ktor.client.plugins.pluginOrNull
 import io.ktor.client.request.delete
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -16,11 +15,18 @@ import io.ktor.http.contentType
 import io.ktor.http.encodeURLParameter
 import io.ktor.http.encodeURLPathPart
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -82,11 +88,13 @@ class AuthClient(
     // 但调用方若在 lambda 里把 this 存了出去，之后再改不该影响已经建好的 client。
     private val localeProvider: () -> String?
     private val injectedHttpClient: HttpClient?
+    private val lockFuseMillis: Long
 
     init {
         val config = LoginbaseConfig().apply(configure)
         localeProvider = config.localeProvider
         injectedHttpClient = config.httpClient
+        lockFuseMillis = config.lockFuseMillis
     }
 
     private val json = Json {
@@ -100,23 +108,25 @@ class AuthClient(
     // 惰性初始化：engine 由消费方提供，无参构造 HttpClient 在 classpath 没有 engine 时
     // 会直接抛异常。不发 HTTP 的 API（signInUrl 拼串、restore 读存储）不该被这个
     // 要求连坐——真正发请求时才需要 engine。
-    // 注入的 client 若一个超时都没配，一个挂住的请求会**永久持有单飞锁**，把所有等锁
-    // 的调用一起拖死（Supabase 的孤儿锁故障就是这个形态）。故此处补一道保险丝：
-    // 只在消费方没装 HttpTimeout 时才装，且用宽松值——绝不覆盖消费方自己的设置。
-    // `config {}` 复用同一个 engine，不额外开连接池。
+    //
+    // 注入的 client **原样使用，绝不派生**。曾经这里会在消费方没装 HttpTimeout 时
+    // `injected.config { install(HttpTimeout) }` 补一道保险丝，两个问题：
+    //
+    // 1. `config {}` 派生出的 client 会把 engine 的 clientRefCount +1。消费方
+    //    `close()` 自己那个 client 时 refcount 只从 2 降到 1，**engine 永不关闭**，
+    //    而派生出来的这个从不 close，refcount 永远回不到 0 → 线程池泄漏。
+    // 2. 判据 `pluginOrNull(HttpTimeout) != null` 太粗：`HttpTimeoutConfig` 三个字段
+    //    互相独立且默认 null，消费方只配了 `connectTimeoutMillis`（很常见）时插件存在、
+    //    保险丝被跳过，但连上之后服务端不回照样无限挂住——正是它声称要消灭的形态。
+    //
+    // 保险丝改在 [runRound] 里用 `withTimeout` 实现：与消费方的 client 配置完全正交，
+    // 既不派生 client，也不依赖对方装了什么插件。
     private val http: HttpClient by lazy {
-        val injected = injectedHttpClient ?: return@lazy HttpClient {
+        injectedHttpClient ?: HttpClient {
             install(HttpTimeout) {
                 requestTimeoutMillis = TIMEOUT_MS
                 connectTimeoutMillis = TIMEOUT_MS
                 socketTimeoutMillis = TIMEOUT_MS
-            }
-        }
-        if (injected.pluginOrNull(HttpTimeout) != null) {
-            injected
-        } else {
-            injected.config {
-                install(HttpTimeout) { requestTimeoutMillis = LOCK_FUSE_TIMEOUT_MS }
             }
         }
     }
@@ -129,7 +139,7 @@ class AuthClient(
      *
      * | | 持有期间 | 最坏等待 |
      * |---|---|---|
-     * | [refreshMutex] | 跨整个 HTTP 往返 | [LOCK_FUSE_TIMEOUT_MS]（45 秒） |
+     * | [refreshMutex] | 跨整个 HTTP 往返 | 保险丝时长（默认 45 秒） |
      * | [storeMutex] | 只有本地存储读+写 | 毫秒级 |
      *
      * [signOut] 只碰这一把，所以「用户点了登出就该立刻是登出的」这条纪律不受在途刷新
@@ -292,9 +302,9 @@ class AuthClient(
      * 回调里、解析炸掉时 completion 永远不来。这里 HTTP 调用是我们自己的，`withLock`
      * 的 finally 保证锁必定释放——但**请求本身必须有限时**：库自建的 client 装了
      * `HttpTimeout`，而消费方注入的 client（文档鼓励注入以复用连接池）未必配了超时，
-     * 一个挂住的请求就会永久持锁，所有等锁的调用一起卡死。故这里加一道
-     * [LOCK_FUSE_TIMEOUT_MS] 保险丝（只在注入的 client 没装 HttpTimeout 时补装），
-     * 它刻意宽松——职责是「别让锁永远握着」，不是替消费方决定超时值。
+     * 一个挂住的请求就会永久持锁，所有等锁的调用一起卡死。故 [runRound] 里用
+     * `withTimeout` 加了一道保险丝（时长见 [LoginbaseConfig.lockFuseMillis]），它刻意
+     * 宽松——职责是「别让锁永远握着」，不是替消费方决定超时值。
      */
     suspend fun refresh(): RefreshOutcome {
         if (tokenStore.load() == null) {
@@ -344,13 +354,26 @@ class AuthClient(
      */
     private suspend fun runRound(current: TokenPair): RefreshOutcome {
         val response = try {
-            http.post("$base/refresh") {
-                contentType(ContentType.Application.Json)
-                setBody(jsonBody(mapOf("refreshToken" to current.refreshToken)))
+            // 单飞锁的保险丝。放在这里而不是给注入的 client 装插件，见 [http] 的说明：
+            // 与消费方的超时配置正交，不派生 client、不依赖对方装了什么。
+            // 值刻意宽松——职责是「别让锁永远握着」，不是替消费方决定超时。
+            withTimeout(lockFuseMillis) {
+                http.post("$base/refresh") {
+                    contentType(ContentType.Application.Json)
+                    setBody(jsonBody(mapOf("refreshToken" to current.refreshToken)))
+                }
             }
+        } catch (e: TimeoutCancellationException) {
+            // 保险丝熔断。它是 CancellationException 的子类，必须抢在下面那个分支前面
+            // 捕获，否则会被当成「调用方取消」抛出去。
+            return refreshFailed(LoginbaseException.Network(e))
         } catch (e: CancellationException) {
-            // 调用方主动取消：如实传播，不吞成 Failed（否则破坏结构化并发）
-            throw e
+            // 只有**当前协程确实被取消**才如实传播。ktor 会在 client 的 job 被 cancel 时
+            // 连带取消在途请求——消费方退登/重建 DI 时 `close()` 掉自己的 HttpClient
+            // 就是这个形态，那个 CancellationException 与调用方无关。原样抛出的话，
+            // 调用方的 launch 会当成「自己被取消」而静默丢弃，UI 永远等不到 Failed。
+            currentCoroutineContext().ensureActive()
+            return refreshFailed(LoginbaseException.Network(e))
         } catch (e: Exception) {
             // 传输层失败（含超时）：会话可能好好的，**绝不清**
             return refreshFailed(LoginbaseException.Network(e))
@@ -404,7 +427,9 @@ class AuthClient(
                 }
             }
         } catch (e: CancellationException) {
-            // 与上面的传输层分支同规矩：取消如实传播，不吞成 Failed
+            // 取消如实传播，不吞成 Failed。这里**不需要** [runRound] 里那道
+            // `ensureActive()` 守卫：[TokenStore] 是我们直接调用的，没有第三方能从旁边
+            // 取消它，所以这个取消必然来自调用方本身。
             throw e
         } catch (e: Exception) {
             return refreshFailed(LoginbaseException.Storage(e))
@@ -427,21 +452,38 @@ class AuthClient(
      * 45 秒，登出等它就违背了上面那条纪律。与在途刷新的竞态由 [refresh] 落盘前的
      * 重读比对负责收敛，见那里的说明。
      */
-    suspend fun signOut() {
-        val token = tokenStore.load()?.accessToken
-        if (token != null) {
-            runCatching { http.delete("$base/sessions") { header(HttpHeaders.Authorization, "Bearer $token") } }
-        }
-        clearLocally()
-    }
+    suspend fun signOut(): Unit = signOutInternal("$base/sessions")
 
     /** 登出该用户全部会话：`DELETE /sessions/all` + 清本地。同样尽力而为。 */
-    suspend fun signOutAll() {
+    suspend fun signOutAll(): Unit = signOutInternal("$base/sessions/all")
+
+    /**
+     * [signOut] / [signOutAll] 的共同实现——登出的取消策略只写这一遍。
+     *
+     * 服务端那一步是尽力而为，失败**和被取消**都不该拦住本地登出：用户点了登出，
+     * 中途界面被销毁、协程被取消，结果却还登录着，是最难排查的一类状态不一致。
+     * 故本地清除放在 `finally` 里、包在 [NonCancellable] 中，取消随后照常向上传播——
+     * 调用方的协程正常结束，而不是被伪装成「登出成功」。
+     *
+     * 顺带修掉原来的 `runCatching`：它连 [CancellationException] 一起吞，
+     * 已取消的协程会若无其事地继续往下走。
+     */
+    private suspend fun signOutInternal(url: String) {
         val token = tokenStore.load()?.accessToken
-        if (token != null) {
-            runCatching { http.delete("$base/sessions/all") { header(HttpHeaders.Authorization, "Bearer $token") } }
+        try {
+            if (token != null) {
+                try {
+                    http.delete(url) { header(HttpHeaders.Authorization, "Bearer $token") }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // 尽力而为：服务端那条会话最坏留到 refresh token 自然失效
+                    // 或被重用检测清掉，不该因此把用户卡在登录态
+                }
+            }
+        } finally {
+            withContext(NonCancellable) { clearLocally() }
         }
-        clearLocally()
     }
 
     // 清本地会话。放进 storeMutex 是为了和 refresh 的「重读比对 + 落盘」互斥：
@@ -541,9 +583,23 @@ class AuthClient(
             buildJsonObject { payload.forEach { (k, v) -> put(k, JsonPrimitive(v)) } },
         )
 
-    private suspend fun HttpResponse.parseJsonOrNull(): JsonObject? = runCatching {
-        json.parseToJsonElement(bodyAsText()) as? JsonObject
-    }.getOrNull()
+    // 响应体不是协议 JSON（网关的 HTML 错误页、空体等）时返回 null，由调用处回退。
+    // 不用 runCatching：它连 CancellationException 一起吞——bodyAsText() 是 suspend 的，
+    // 调用方取消会被伪装成「响应体解析不出来」，已取消的协程继续往下跑，破坏结构化并发。
+    private suspend fun HttpResponse.parseJsonOrNull(): JsonObject? {
+        val text = try {
+            bodyAsText()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return null
+        }
+        return try {
+            json.parseToJsonElement(text) as? JsonObject
+        } catch (e: SerializationException) {
+            null
+        }
+    }
 
     private fun JsonObject.toTokenPair(): TokenPair? {
         val access = this["accessToken"]?.jsonPrimitive?.content
@@ -565,9 +621,6 @@ class AuthClient(
     private companion object {
         const val TIMEOUT_MS = 15_000L
 
-        // 单飞锁的保险丝：只在注入的 client 没配任何超时时才用，故取宽松值——
-        // 它的职责是「别让锁永远握着」，不是替消费方决定请求该多久超时
-        const val LOCK_FUSE_TIMEOUT_MS = 45_000L
         const val DEFAULT_COOLDOWN = 60
     }
 }

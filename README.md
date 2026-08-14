@@ -78,6 +78,8 @@ auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新
 有多进程结构时，跨进程互斥需消费方自己保证。**本库刻意不做跨进程锁**——失败代价不对称：没有它最坏是多刷一次，有了它最坏是认证彻底卡死（Supabase 用 Web Locks 做跨标签页锁，换来的正是一串孤儿锁与死锁故障）。业界同形：Auth0 的 `CredentialsManager` 同样只保证实例内串行，文档里明写「不要从多个实例调用续期方法」。
 
 > Ktor 的 `Auth` 插件也内建单飞，但它只协调**装了该插件的那一个 `HttpClient`**。App 通常有多个 client（业务 API、图片、第三方），各刷各的照样烧配额——所以两者是叠加不是替代：可以在自己的 client 上装 `Auth` 插件、`refreshTokens` 回调里调 `authClient.refresh()`，由本库的锁保证全局只刷一次。
+>
+> ⚠️ **装了 `Auth` 插件的那个 client 不要注入给 `AuthClient`**（即不要设成 `LoginbaseConfig.httpClient`）。否则本库的 `POST /refresh` 也会过该插件：服务端返回 401 时插件回调里再调 `authClient.refresh()`，而当前协程已经持有单飞锁——`Mutex` 不可重入，会**永久挂起**。业务 client 与注入给本库的 client 分开即可（复用同一个 engine 没问题）。
 
 ## 状态
 
