@@ -1,6 +1,9 @@
 # 设计方案：社交登录的浏览器环节收进库内（Auth Tab + intent-filter 双通路）
 
-> 状态：**待评审**。对应 `docs/todo.md` 第 26 条。
+> 状态：**校准中**。对应 `docs/todo.md` 第 26 条。
+>
+> ⚠️ **正文第 5 节起的部分内容已被第 11 节的校准结论推翻，以第 11 节为准。**
+> 校准完成后再统一重写正文。
 >
 > 目标读者：维护者。决策背景见本文第 1 节，落地前必须先做第 8 节的 spike。
 
@@ -352,3 +355,98 @@ Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 
 **1 期能独立交付且独立有价值**：即使 2 期不做，接入方自己开浏览器时也已经不用再解析参数、
 不用分辨流程了。而它零新依赖、可完整单测——先做它，风险最低。
+
+
+---
+
+# 11. 校准记录（与既有实现对照）
+
+## 背景
+
+本方案的正文是在**不知道消费方已有实现**的前提下写的——这是刻意的，避免设计被既有代码
+锚定。写完之后再拿 TrendingAI 的实际实现做对照校准。
+
+对照来源（都在本机）：
+
+| 来源 | 路径 | 相关文件 |
+|---|---|---|
+| 消费方（Android/KMP） | `~/TrendingProjects/TrendingAI` | `androidApp/.../AuthRedirectActivity.kt`、`shared/.../auth/LoginbaseAuthManager.kt`、`androidApp/build.gradle.kts` |
+| 消费方服务端 | `~/TrendingProjects/github-ai-trending-api` | `src/lib/loginbase.js`、`wrangler.toml` 的 `AUTH_DEEPLINKS` |
+| 本库服务端 | `~/loginbase` | `src/token.ts`、`src/middleware.ts` |
+| 参考实现 | GitHub | AppAuth-Android 的 `RedirectUriReceiverActivity` 与 `library/AndroidManifest.xml`（已逐字核对） |
+
+**TrendingAI 已经手写了本方案的大部分**：中转页、进程级回调总线（`replay = 1`）、
+三态回跳解析。所以 #26 的性质是「把已验证的实现下沉进库并补齐库特有的部分」，
+不是从零设计——但也**不是照抄**：它是 App 层实现，若干选择在库层不成立。
+
+## 八条差异与裁决状态
+
+| # | 决策点 | 本文原设计 | TrendingAI | AppAuth | 裁决 | 状态 |
+|---|---|---|---|---|---|---|
+| 1 | scheme 怎么传 | `${applicationId}` | placeholder + `buildConfigField` 双喂 | `${appAuthRedirectScheme}` placeholder | **placeholder + `<meta-data>`** | ✅ 已对齐 |
+| 2 | 中转页 launchMode | `singleTask` | `standard` | **无（默认 standard）** | `standard` | ⬜ 待对齐 |
+| 3 | 怎么回到 App | `isTaskRoot` 分支 | `REORDER_TO_FRONT` | 转交管理 Activity → `PendingIntent` | `getLaunchIntentForPackage` + `REORDER_TO_FRONT` | ⬜ 待对齐 |
+| 4 | redirect 形态 | 带 host | `scheme:/path` 无 host | 不限定 | 无 host（RFC 8252 §7.1 示例形态） | ⬜ 待对齐 |
+| 5 | 结果通道 | 双通道（返回值 + flow） | 单通道（bus） | 单通道（PendingIntent） | **单通道**，且 `signIn()` 可不必挂起 | ⬜ 待对齐 |
+| 6 | 取消检测 | 「做不到」 | ON_RESUME + `hasPending` | `canceledIntent` | **分层**：库拥有启动时是确定信号，纯浏览器兜底才用启发式 | ⬜ 待对齐 |
+| 7 | 幂等 / replay | 记住最后 otc | `resetReplayCache()` | — | **两个机制各司其职**（前者防跨通路重复，后者防陈旧 replay） | ⬜ 待对齐 |
+| 8 | URL 解码 | 未提 | 手写 20 行 percent-decoder | — | 用 ktor 的 `decodeURLQueryComponent()`（既有依赖） | ⬜ 待对齐 |
+
+> 逐条对齐时都要**带一个具体场景**说明校准方案，不要只给结论。
+
+## 差异 #1 的完整结论（已对齐）
+
+### 裁决
+
+**采用 `manifestPlaceholders` + `<meta-data>`。撤回 `${applicationId}` 与「字符串资源」两个方案。**
+
+### 为什么 `${applicationId}` 不成立
+
+`applicationId` 反写未必是自有域名——TrendingAI 是 `whl.trending.ai`，反写不对应任何真实
+域名，RFC 8252 §7.1 不合规；他们实际用 `cn.trendingai`（← `trendingai.cn`），且在
+`build.gradle.kts` 里明确注释过「不能用 applicationId」。
+
+更根本的理由：**服务端 redirect 白名单永远要人工配**（那是安全控制）。自动推导并没有消掉
+人工配置，只是把「两处人工必须一致」变成「一处人工 + 一处自动必须碰巧一致」——改包名、
+加渠道后缀就会悄悄漂移。
+
+**所以「消费方零配置」在 scheme 这一项上不成立，实际是每变体一行。** 其余各项（manifest
+XML、生命周期钩子、参数解析、流程分辨、`exchangeOtc`）仍是零。
+
+### 为什么不是字符串资源
+
+字符串资源能做到单一来源，但**忘配时是静默失败**（用库的默认值），症状「用户授权完卡在
+浏览器」离原因「少写一行 gradle」极远。placeholder 忘配则**构建期直接失败**——花机器时间
+换人的排查时间，值。
+
+### 为什么加 `<meta-data>`
+
+`<meta-data>` 是 `buildConfigField` 在库场景下的等价物：TrendingAI 用 `BuildConfig` 把同一个
+值喂给运行时代码，但**库读不到消费方的 `BuildConfig`**。同一个 placeholder 同时填进
+`<data android:scheme>` 与 `<meta-data>`，运行时经 `PackageManager` 读回，物理上不可能漂移。
+
+```xml
+<data android:scheme="${loginbaseRedirectScheme}" />
+<meta-data android:name="loginbase.redirectScheme"
+           android:value="${loginbaseRedirectScheme}" />
+```
+
+### 配套：怎么让接入方感知这条跨仓库不变式
+
+跨仓库的不变式靠文档一定会腐化，主要手段是**错的时候尽早、就地、带修法报错**。四层：
+
+1. **构建期**：placeholder 缺失 → 构建失败（采用 placeholder 而非字符串资源的核心理由）
+2. **发起前自检**（~15 行，最高价值）：拉起浏览器**之前**检查 meta-data 是否存在、
+   `Intent(ACTION_VIEW, redirect)` 能否被解析、解析到的是否是本 App。三种失败分别对应
+   「没给 meta-data」「scheme 写错或变体没配」「**别的 App 抢了同一个 scheme**」——
+   最后一条顺带是安全信号
+3. **错误消息带上「另一半」**：客户端报错时必须提醒服务端白名单要填同一个值，并说明
+   「两边不一致时浏览器停在 `invalid_redirect`，App 侧收不到任何信号」
+4. **让「该填给服务端什么」随手可查**：`Loginbase.redirectUri(context)` 一行返回
+   `cn.trendingai:/loginbase/callback`；debug 构建（`FLAG_DEBUGGABLE`）首次发起时自动打印
+
+README 需要一个独立小节，含「三处一致」表与**症状 → 原因**映射表。
+
+**明确不做**：debug 构建预检服务端（发起前探一次 start 端点）。浏览器里的
+`invalid_redirect` 本身并不隐蔽（地址栏能看到发出去的 redirect 值），不值得每次登录多一次
+请求 + 一条只在 debug 存在的代码路径。
