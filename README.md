@@ -65,7 +65,22 @@ auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新
 
 ## 状态
 
-核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。36 个测试。
+核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。40 个测试。
+
+### 错误处理
+
+本库抛出的一切都挂在 `LoginbaseException` 这个 sealed 根下，**包括传输层失败**——engine 由消费方提供、ktor 只是实现细节，不该逼调用方去 catch `IOException`：
+
+```kotlin
+try {
+    auth.verifyCode(email, code)
+} catch (e: LoginbaseException.Api) {          // 服务端明确拒绝，按 e.error 给用户提示
+} catch (e: LoginbaseException.Network) {      // 没连上，可重试；e.cause 是原始异常
+} catch (e: LoginbaseException.MalformedResponse) {  // 两端对不上，重试无用，报给开发者
+}
+```
+
+`refresh()` 是唯一的例外，它返回 `RefreshOutcome` 而不抛——因为它的三种失败**处置方式不同**（`SessionEnded` 必须引导重新登录、`Failed` 该重试、`NoSession` 压根没会话），sealed 的穷尽 `when` 能逼调用方各自想清楚，而 `catch` 不会。`RefreshOutcome.Failed.cause` 同样是 `LoginbaseException`，两边共用一套词汇。
 
 社交登录的 provider 是 [`OAuthProvider`](library/src/commonMain/kotlin/wang/harlon/loginbase/OAuthProvider.kt)（value class，不是枚举）：服务端启用了哪几个由服务端 App 配置，本库不知道也不校验，所以没列进 `OAuthProvider.GitHub` 这类常量的直接写 `OAuthProvider("google")` 即可，不必等客户端发版。
 

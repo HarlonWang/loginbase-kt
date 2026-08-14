@@ -189,14 +189,16 @@ public class AuthClient(
      */
     public suspend fun linkUrl(provider: OAuthProvider, redirect: String): String {
         val token = accessToken()
-            ?: throw NotAuthenticatedException("Linking an OAuth identity requires an authenticated session")
+            ?: throw LoginbaseException.NotAuthenticated(
+                "Linking an OAuth identity requires an authenticated session"
+            )
         val body = request(
             url = "$base/oauth/${provider.id.encodeURLPathPart()}/link/start",
             payload = mapOf("redirect" to redirect),
             bearer = token,
         )
         return body["authorizeUrl"]?.jsonPrimitive?.content
-            ?: throw AuthApiException(200, AuthError.UNKNOWN, rawError = "missing authorizeUrl")
+            ?: throw LoginbaseException.MalformedResponse("authorizeUrl")
     }
 
     // ---- 会话 ----
@@ -261,8 +263,8 @@ public class AuthClient(
                 // 调用方主动取消：如实传播，不吞成 Failed（否则破坏结构化并发）
                 throw e
             } catch (e: Exception) {
-                // 网络层失败（含超时）：会话可能好好的，**绝不清**
-                return@withLock RefreshOutcome.Failed(e)
+                // 传输层失败（含超时）：会话可能好好的，**绝不清**
+                return@withLock RefreshOutcome.Failed(LoginbaseException.Network(e))
             }
 
             if (response.status.value == 401) {
@@ -278,21 +280,26 @@ public class AuthClient(
             if (!response.status.isSuccess()) {
                 // 5xx / 其他：可能是暂时的，保留会话让调用方重试
                 return@withLock RefreshOutcome.Failed(
-                    AuthApiException(response.status.value, AuthError.INTERNAL)
+                    LoginbaseException.Api(response.status.value, AuthError.INTERNAL)
                 )
             }
 
             val body = response.parseJsonOrNull()
-                ?: return@withLock RefreshOutcome.Failed(IllegalStateException("empty refresh response"))
+                ?: return@withLock RefreshOutcome.Failed(LoginbaseException.MalformedResponse("body"))
             val tokens = body.toTokenPair()
-                ?: return@withLock RefreshOutcome.Failed(IllegalStateException("refresh response missing token fields"))
+                ?: return@withLock RefreshOutcome.Failed(
+                    LoginbaseException.MalformedResponse("accessToken/refreshToken")
+                )
 
             // 先落盘再宣告成功：没存住就当没刷成功，否则下次拿旧令牌去刷会触发
             // 服务端救活（有护栏）。TokenStore 实现保证 save 返回时已落盘。
             try {
                 persist(tokens)
+            } catch (e: CancellationException) {
+                // 与上面的传输层分支同规矩：取消如实传播，不吞成 Failed
+                throw e
             } catch (e: Exception) {
-                return@withLock RefreshOutcome.Failed(e)
+                return@withLock RefreshOutcome.Failed(LoginbaseException.Storage(e))
             }
             RefreshOutcome.Success(tokens)
         }
@@ -335,16 +342,28 @@ public class AuthClient(
         _authState.value = AuthState.SignedOut
     }
 
-    /** POST JSON，2xx 返回响应体，否则按协议抛 [AuthApiException] */
+    /**
+     * POST JSON，2xx 返回响应体，否则按协议抛 [LoginbaseException.Api]。
+     *
+     * 传输层异常在这里就被包成 [LoginbaseException.Network]——调用方不该为了接住
+     * 「没连上」去认识 ktor 的异常层次（见 [LoginbaseException] 的说明）。
+     */
     private suspend fun request(
         url: String,
         payload: Map<String, String>,
         bearer: String? = null,
     ): JsonObject {
-        val response = http.post(url) {
-            contentType(ContentType.Application.Json)
-            if (bearer != null) header(HttpHeaders.Authorization, "Bearer $bearer")
-            setBody(jsonBody(payload))
+        val response = try {
+            http.post(url) {
+                contentType(ContentType.Application.Json)
+                if (bearer != null) header(HttpHeaders.Authorization, "Bearer $bearer")
+                setBody(jsonBody(payload))
+            }
+        } catch (e: CancellationException) {
+            // 取消不是失败：原样穿透，否则破坏结构化并发
+            throw e
+        } catch (e: Exception) {
+            throw LoginbaseException.Network(e)
         }
         val body = response.parseJsonOrNull()
         if (!response.status.isSuccess()) {
@@ -352,7 +371,7 @@ public class AuthClient(
             // 响应体不是协议 JSON（网关的 HTML 错误页、空体等）时 raw 为空，
             // 回退成 http_<status> 而不是留个空串——否则异常里没有任何可诊断信息
             val diagnosable = raw.ifEmpty { "http_${response.status.value}" }
-            throw AuthApiException(
+            throw LoginbaseException.Api(
                 status = response.status.value,
                 error = AuthError.fromWire(raw),
                 retryAfterSeconds = body?.get("retryAfterSeconds")?.jsonPrimitive?.int,
@@ -383,7 +402,7 @@ public class AuthClient(
 
     private fun JsonObject.toSession(): AuthSession {
         val tokens = toTokenPair()
-            ?: throw AuthApiException(200, AuthError.UNKNOWN, rawError = "missing tokens")
+            ?: throw LoginbaseException.MalformedResponse("accessToken/refreshToken")
         return AuthSession(
             tokens = tokens,
             isNewUser = this["isNewUser"]?.jsonPrimitive?.booleanOrNull,

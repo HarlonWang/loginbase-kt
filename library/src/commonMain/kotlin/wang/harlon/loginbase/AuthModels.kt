@@ -50,39 +50,19 @@ public sealed interface RefreshOutcome {
     public data class SessionEnded(val reason: RefreshFailure) : RefreshOutcome
 
     /**
-     * 网络失败 / 超时 / 5xx——**会话未被清除**，可以重试。
+     * 网络失败 / 超时 / 5xx / 响应畸形 / 没存住——**会话未被清除**，可以重试。
      *
      * 这个区分是 Logto 时代事故的直接教训：把暂时性失败当成会话失效来清，
      * 会把弱网（漫游、地铁）用户的好会话踢下线。
+     *
+     * [cause] 收窄成 [LoginbaseException] 而不是 `Throwable`：调用方想按失败类别
+     * 分流（网络失败退避重试、[LoginbaseException.MalformedResponse] 上报开发者）时，
+     * 一个 `Throwable` 什么也告诉不了他，而裸的 ktor 异常又把实现细节写进了契约。
      */
-    public data class Failed(val cause: Throwable) : RefreshOutcome
+    public data class Failed(val cause: LoginbaseException) : RefreshOutcome
 
     /** 本地压根没有令牌 */
     public data object NoSession : RefreshOutcome
 }
 
-/**
- * 需要已登录的操作（如绑定第二身份）在无会话时抛出。
- *
- * 独立类型而非 `IllegalStateException`：未登录时点「绑定第三方账号」不一定是编程错误
- * ——UI 状态与实际会话可能短暂不同步——调用方需要能单独 catch 它并引导登录。
- * 也不用返回 null 表达：那会和「网络失败」混在一起无法区分。
- */
-public class NotAuthenticatedException(
-    message: String = "operation requires an authenticated session",
-) : Exception(message)
-
-/**
- * 服务端按协议返回的错误（`{"error": ...}`）。
- * 网络层异常不走这里——那是 ktor 自己的异常，调用方据此区分「服务端说不行」与「没连上」。
- */
-public class AuthApiException(
-    public val status: Int,
-    public val error: AuthError,
-    /** `too_many_requests` 才有：还要等多少秒 */
-    public val retryAfterSeconds: Int? = null,
-    /** `invalid_refresh_token` 才有 */
-    public val refreshFailure: RefreshFailure? = null,
-    /** 服务端原始 error 串，便于排查未知码 */
-    public val rawError: String = error.wire,
-) : Exception("loginbase error: $rawError (HTTP $status)")
+// 异常类型见 [LoginbaseException]——本库抛出的一切都挂在那个 sealed 根下。

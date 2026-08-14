@@ -80,6 +80,10 @@ class AuthClientTest {
         val outcome = client.refresh()
         assertTrue(store.saved, "应该尝试过落盘")
         assertIs<RefreshOutcome.Failed>(outcome)
+        // 归到 Storage 而不是笼统的 Failed：调用方能看出「刷到了但没存住」，
+        // 这和「没连上」的处置完全不同
+        val cause = assertIs<LoginbaseException.Storage>(outcome.cause)
+        assertIs<IllegalStateException>(cause.cause, "原始异常要留在 cause 里可排查")
     }
 
     // ---- 会话失效判定：只有服务端明说才清 ----
@@ -110,6 +114,8 @@ class AuthClientTest {
         val outcome = client.refresh()
         assertIs<RefreshOutcome.Failed>(outcome)
         assertNotNull(store.load(), "暂时性失败绝不能清会话")
+        val cause = assertIs<LoginbaseException.Network>(outcome.cause)
+        assertEquals("network down", cause.cause?.message, "原始异常要留在 cause 里")
     }
 
     @Test
@@ -138,8 +144,26 @@ class AuthClientTest {
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
         val (client, _) = clientWith(store) { respondError(HttpStatusCode.InternalServerError) }
 
-        assertIs<RefreshOutcome.Failed>(client.refresh())
+        val outcome = client.refresh()
+        assertIs<RefreshOutcome.Failed>(outcome)
+        assertEquals(500, assertIs<LoginbaseException.Api>(outcome.cause).status)
         assertNotNull(store.load())
+    }
+
+    @Test
+    fun `refresh 响应缺 token 字段——两端对不上，不是「服务端说不行」`() = runTest {
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        val (client, _) = clientWith(store) {
+            respond("""{"ok":true}""", HttpStatusCode.OK, jsonHeaders())
+        }
+
+        val outcome = client.refresh()
+        assertIs<RefreshOutcome.Failed>(outcome)
+        assertEquals(
+            "accessToken/refreshToken",
+            assertIs<LoginbaseException.MalformedResponse>(outcome.cause).field,
+        )
+        assertNotNull(store.load(), "两端对不上也不是会话失效，绝不能清")
     }
 
     @Test
@@ -201,7 +225,7 @@ class AuthClientTest {
                 jsonHeaders(),
             )
         }
-        val e = assertFailsWith<AuthApiException> { client.sendCode("a@b.com") }
+        val e = assertFailsWith<LoginbaseException.Api> { client.sendCode("a@b.com") }
         assertEquals(AuthError.TOO_MANY_REQUESTS, e.error)
         assertEquals(42, e.retryAfterSeconds)
     }
@@ -211,7 +235,7 @@ class AuthClientTest {
         val (client, _) = clientWith(InMemoryTokenStore()) {
             respond("""{"error":"invalid_code"}""", HttpStatusCode.BadRequest, jsonHeaders())
         }
-        val e = assertFailsWith<AuthApiException> { client.verifyCode("a@b.com", "000000") }
+        val e = assertFailsWith<LoginbaseException.Api> { client.verifyCode("a@b.com", "000000") }
         assertEquals(AuthError.INVALID_CODE, e.error)
     }
 
@@ -220,7 +244,7 @@ class AuthClientTest {
         val (client, _) = clientWith(InMemoryTokenStore()) {
             respond("""{"error":"some_future_error"}""", HttpStatusCode.BadRequest, jsonHeaders())
         }
-        val e = assertFailsWith<AuthApiException> { client.sendCode("a@b.com") }
+        val e = assertFailsWith<LoginbaseException.Api> { client.sendCode("a@b.com") }
         assertEquals(AuthError.UNKNOWN, e.error)
         assertEquals("some_future_error", e.rawError)
     }
@@ -273,7 +297,7 @@ class AuthClientTest {
         // 未登录直接抛，不白打一次服务端。用专用类型而非 IllegalStateException：
         // UI 状态与实际会话可能短暂不同步，调用方要能单独 catch 它去引导登录
         val anonymous = AuthClient(BASE, InMemoryTokenStore())
-        assertFailsWith<NotAuthenticatedException> { anonymous.linkUrl(OAuthProvider.GitHub, "app://cb") }
+        assertFailsWith<LoginbaseException.NotAuthenticated> { anonymous.linkUrl(OAuthProvider.GitHub, "app://cb") }
 
         var sawBearer: String? = null
         var sawUrl: String? = null
@@ -294,10 +318,71 @@ class AuthClientTest {
         val (client, _) = clientWith(InMemoryTokenStore()) {
             respond("<html>502 Bad Gateway</html>", HttpStatusCode.BadGateway, headersOf(HttpHeaders.ContentType, "text/html"))
         }
-        val e = assertFailsWith<AuthApiException> { client.sendCode("a@b.com") }
+        val e = assertFailsWith<LoginbaseException.Api> { client.sendCode("a@b.com") }
         assertEquals(AuthError.UNKNOWN, e.error)
         assertEquals(502, e.status)
         assertEquals("http_502", e.rawError, "至少要能看出是哪个状态码")
+    }
+
+    // ---- 异常契约：一个根，且不泄漏 ktor ----
+
+    @Test
+    fun `传输层异常包成 Network，不把 ktor 类型泄漏给调用方`() = runTest {
+        // engine 由消费方提供、ktor 只是实现细节，不该逼调用方去 catch ktor 的异常层次
+        val (client, _) = clientWith(InMemoryTokenStore()) { throw RuntimeException("dns fail") }
+
+        val e = assertFailsWith<LoginbaseException.Network> { client.sendCode("a@b.com") }
+        assertEquals("dns fail", e.cause?.message, "原始异常留在 cause 里，排查照样拿得到")
+    }
+
+    @Test
+    fun `2xx 但响应形状不对，归 MalformedResponse 而非 Api`() = runTest {
+        // Api = 服务端明确拒绝，用户看错误提示；MalformedResponse = 两端对不上，
+        // 用户重试多少次都一样，该报给开发者。混成一类调用方就没法分流
+        val (verify, _) = clientWith(InMemoryTokenStore()) {
+            respond("""{"isNewUser":true}""", HttpStatusCode.OK, jsonHeaders())
+        }
+        assertEquals(
+            "accessToken/refreshToken",
+            assertFailsWith<LoginbaseException.MalformedResponse> {
+                verify.verifyCode("a@b.com", "123456")
+            }.field,
+        )
+
+        val (link, _) = clientWith(InMemoryTokenStore(TokenPair("a0", "r0"))) {
+            respond("""{}""", HttpStatusCode.OK, jsonHeaders())
+        }
+        assertEquals(
+            "authorizeUrl",
+            assertFailsWith<LoginbaseException.MalformedResponse> {
+                link.linkUrl(OAuthProvider.GitHub, "app://cb")
+            }.field,
+        )
+    }
+
+    @Test
+    fun `所有失败都能被 LoginbaseException 一网打尽`() = runTest {
+        // 这个测试就是根类型存在的理由：调用方写一个 catch 就能兜住「这次没成」，
+        // 不必同时认识 Api、Network、NotAuthenticated 三套不相干的类型
+        val api = clientWith(InMemoryTokenStore()) {
+            respond("""{"error":"invalid_email"}""", HttpStatusCode.BadRequest, jsonHeaders())
+        }.first
+        val network = clientWith(InMemoryTokenStore()) { throw RuntimeException("offline") }.first
+        val anonymous = AuthClient(BASE, InMemoryTokenStore())
+
+        val caught = listOf<suspend () -> Unit>(
+            { api.sendCode("bad") },
+            { network.sendCode("a@b.com") },
+            { anonymous.linkUrl(OAuthProvider.GitHub, "app://cb") },
+        ).map { call ->
+            try {
+                call()
+                null
+            } catch (e: LoginbaseException) {
+                e
+            }
+        }
+        assertTrue(caught.all { it != null }, "三种失败都该被根类型接住：$caught")
     }
 
     @Test

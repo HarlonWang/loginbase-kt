@@ -17,17 +17,20 @@
 - **修法**：改成 `signInUrl(provider: OAuthProvider, redirect: String)` / `linkUrl(provider, redirect)`。`OAuthProvider` 用带 wire 值的枚举或 value class，留 `Custom(String)` 口子，避免服务端加 provider 时客户端非升级不可。
 - **落地**：新增 `OAuthProvider`（value class，非枚举——服务端 provider 集合由服务端 App 配置，枚举等于每次配置变化都 breaking）；两个方法改名并泛化，provider 走 `encodeURLPathPart()` 编码；库未发布，不留 deprecated 兼容壳。
 
-### [ ] 2. 一个类里两套错误惯例，且异常无根类型
+### [x] 2. 一个类里两套错误惯例，且异常无根类型 — 已完成
 
 - **位置**：`AuthClient.kt:132` `:153` `:171` `:186`（抛异常）对 `:234`（返回 sealed）；`AuthModels.kt:71` `:79`
 - **问题**：`refresh()` 返回 `RefreshOutcome`，其余四个方法抛异常，调用方要在同一个类上同时写 `when` 和 `try/catch`。`AuthApiException` 与 `NotAuthenticatedException` 各自直接继承 `Exception`，没有公共基类，写不出 `catch (e: LoginbaseException)`。
 - **修法**：加 `public sealed class LoginbaseException`，下挂 `Api` / `Network` / `NotAuthenticated`；两种惯例二选一（保留异常更省改动，`refresh()` 的三态可做成子类型 + `Result`）。
+- **落地**：新增 `LoginbaseException` sealed 根，下挂 `Api` / `Network` / `MalformedResponse` / `Storage` / `NotAuthenticated`；`AuthApiException`、`NotAuthenticatedException` 撤销。
+- **与原修法的偏差（有意）**：**没有**把 `refresh()` 收进异常。原修法写的「二选一」在动手后判断是错的——`refresh()` 的三态区分的是**处置方式**（`SessionEnded` 必须重新登录 / `Failed` 该重试 / `NoSession` 没会话）而不是失败原因，sealed 的穷尽 `when` 能逼调用方各自想清楚，换成 `catch` 就不会；而且刷新时网络失败是**预期结果**，不是异常情况。真正的病是「两套惯例没有共同词汇」，已通过把 `Failed.cause` 收窄成 `LoginbaseException` 治掉。
 
-### [ ] 3. 网络层裸露 Ktor 异常
+### [x] 3. 网络层裸露 Ktor 异常 — 已完成
 
 - **位置**：`AuthModels.kt:77` 的注释、`AuthClient.kt:258`
 - **问题**：网络失败时调用方接到的是 `IOException` / `HttpRequestTimeoutException` 等 Ktor 类型。这与「engine 不由本库提供、Ktor 只是实现细节」的定位矛盾——调用方被迫认识 Ktor 的异常层次，而库不承诺不换传输层。
 - **修法**：统一包成第 2 条的 `LoginbaseException.Network(cause)`，原始异常放 `cause`。
+- **落地**：`request()` 与 `refresh()` 的传输层出口都包成 `Network`，原始异常放 `cause`；`request()` 新增的 catch 从一开始就先 rethrow `CancellationException`（不新造第 11 条那类 bug）。
 
 ### [ ] 4. 构造函数直接扩展会破二进制兼容
 
@@ -80,7 +83,7 @@
 
 ### [ ] 11. `CancellationException` 在 4 处被吞
 
-- **位置**：`AuthClient.kt:289`（`persist` 外的 `catch (e: Exception)`）、`:368`（`parseJsonOrNull` 的 `runCatching`）、`:306` `:316`（`signOut` 的 `runCatching`）
+- **位置**：~~`AuthClient.kt:289`（`persist` 外的 `catch (e: Exception)`）~~ 已随第 2 条修掉；剩 `parseJsonOrNull` 的 `runCatching`、`signOut` / `signOutAll` 的两处 `runCatching`
 - **问题**：`:255` 刚立下「取消必须如实传播」的规矩，同一函数里 `persist(tokens)` 的 `catch (e: Exception)` 却会捕获它并转成 `Failed`——已取消的协程正常返回，破坏结构化并发。`runCatching` 捕获 `Throwable`，问题相同。
 - **修法**：各处补 `catch (e: CancellationException) { throw e }`，或换成显式 `try/catch` 只捕获具体类型。
 
@@ -136,11 +139,12 @@
 - **问题**：`private var tokens` 无任何同步，类注释却写「用于测试，**以及「本次启动内有效即可」的场景**」——后半句是在说生产可用。而 `AuthClient` 文档反复强调「多协程并发调 refresh」，两件事凑一起就是数据竞争。
 - **修法**：加 Mutex，或删掉「生产可用」措辞、明确它只是测试替身。
 
-### [ ] 20. `AuthApiException(200, ...)` 混淆「服务端说不行」与「响应体畸形」
+### [x] 20. `AuthApiException(200, ...)` 混淆「服务端说不行」与「响应体畸形」 — 已完成（随第 2 条）
 
 - **位置**：`AuthClient.kt:194` `:381`
 - **问题**：HTTP 200 但响应体缺 `authorizeUrl` / 缺 token 时，抛的是 `AuthApiException(status=200, error=UNKNOWN)`。而这个类的文档说的是「服务端按协议返回的错误」。调用方无法区分「服务端拒绝」和「响应不符合协议」。
 - **修法**：单列一个 `LoginbaseException.MalformedResponse(field)`（挂在第 2 条的根类型下）。
+- **为什么提前做**：`LoginbaseException` 是 sealed，晚一步加子类型就是又一次破坏性变更（同第 8 条的道理）。顺带把 `refresh()` 里两处 `IllegalStateException("empty refresh response")` 也归了进来。
 
 ### [ ] 21. 忘记调 `restore()` 会让 `authState` 与实际行为不同步
 
