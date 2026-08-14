@@ -12,7 +12,7 @@
 
 | 本库版本 | 实现的协议版本（= 服务端包版本） |
 |---|---|
-| 0.1.x | `loginbase@1.2.0` |
+| 0.1.x（未发布） | `loginbase@1.3.0` |
 
 协议变更纪律（分仓版）：服务端实现 + `protocol.md` 同 commit，同时在本仓开跟进 issue，客户端版本落地前不关。分仓决策与理由见服务端仓 [`docs/design.md`](https://github.com/HarlonWang/loginbase/blob/main/docs/design.md) 的「两个仓库」节。
 
@@ -33,7 +33,7 @@ val auth = AuthClient(
 )
 auth.restore()                                           // 启动时恢复登录态
 
-auth.sendCode("a@b.com")                                 // 邮箱验证码
+auth.sendCode("a@b.com")                                 // 邮箱验证码（自动带上 App 显示语言）
 auth.verifyCode("a@b.com", "123456")                     // 成功即落盘
 
 openInBrowser(auth.githubSignInUrl("app://cb"))          // GitHub 登录，回跳带 otc
@@ -49,7 +49,20 @@ auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新
 
 ## 状态
 
-核心已实现：`AuthClient`（邮箱验证码 / GitHub OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**。23 个测试。
+核心已实现：`AuthClient`（邮箱验证码 / GitHub OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。33 个测试。
+
+### 邮件语言（protocol 1.3.0）
+
+`sendCode` 会把 **App 显示给用户的语言**随请求上报，服务端据此选验证码邮件的模板。规则只有两条：
+
+```kotlin
+AuthClient(baseUrl, store)                                  // 什么都不写 = 跟随系统语言
+AuthClient(baseUrl, store, localeProvider = { settings.tag })  // App 内自选；返回 null = 没意见 → 回落系统语言
+```
+
+`null`（以及空串、`und`）只有一个含义——**「我没意见」**，回落系统语言，**不是「不要发」**。想一律某种语言就返回定值，如 `{ "en" }`。服务端对未知语言静默回落，故这条链路**不产生任何新的错误分支**。
+
+平台取值：Android `Locale.getDefault().toLanguageTag()`（已跟随 per-app language）；iOS `Bundle.main.preferredLocalizations.first`（App 实际显示的语言，而非系统首选语言）。两端取不到时字段整个省略，交服务端兜底。
 
 待办见 [issue](https://github.com/HarlonWang/loginbase-kt/issues)：TrendingAI 接入（composite build）、iOS 真机链路验证、首版发布。
 

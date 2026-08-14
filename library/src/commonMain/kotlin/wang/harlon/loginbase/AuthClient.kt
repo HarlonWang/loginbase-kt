@@ -51,11 +51,15 @@ import kotlinx.serialization.json.jsonPrimitive
  * @param httpClient 可注入自己的实例以复用连接池/日志；缺省时库自建。
  *   **不含 engine**——消费方 classpath 里要有（Android: okhttp / iOS: darwin），
  *   库不替你选（依赖最小集，且消费方通常已有）。
+ * @param localeProvider 验证码邮件用什么语言（protocol 1.3.0）。缺省跟随系统语言。
+ *   App 内有自己的语言设置时传它，**返回 `null` 表示「我没意见」→ 回落系统语言**，
+ *   不是「不要发」。想一律某种语言就返回定值，如 `{ "en" }`。
  */
 public class AuthClient(
     baseUrl: String,
     private val tokenStore: TokenStore,
     httpClient: HttpClient? = null,
+    private val localeProvider: () -> String? = ::platformLanguageTag,
 ) {
     private val base: String = baseUrl.trimEnd('/')
 
@@ -95,13 +99,33 @@ public class AuthClient(
 
     // ---- 邮箱验证码 ----
 
-    /** `POST /code/send`。无论账号是否存在都成功（防枚举）。 */
+    /**
+     * `POST /code/send`。无论账号是否存在都成功（防枚举）。
+     *
+     * 邮件语言由 [localeProvider] 决定并随请求上报（protocol 1.3.0）；服务端对未知语言
+     * **静默回落**，故这里不存在与语言相关的错误分支。取不到语言时字段整个省略——
+     * 不发 `und`：服务端虽然也把它当未传，但省略字段才能让服务端事件区分
+     * 「客户端没传」与「传了但不支持」，那是排查客户端链路故障的唯一信号。
+     */
     public suspend fun sendCode(email: String): SendCodeResult {
-        val body = request("$base/code/send", mapOf("email" to email))
+        val payload = buildMap {
+            put("email", email)
+            resolveLocale()?.let { put("locale", it) }
+        }
+        val body = request("$base/code/send", payload)
         return SendCodeResult(
             cooldownSeconds = body["cooldownSeconds"]?.jsonPrimitive?.int ?: DEFAULT_COOLDOWN
         )
     }
+
+    // provider 返回 null/空/und 一律是「我没意见」→ 回落系统语言；系统也给不出才真的不发。
+    // 每次现取不缓存：用户可能刚在 App 里切了语言。
+    //
+    // 只对 provider 的返回值做 usableTag()——[platformLanguageTag] 的契约里已经保证
+    // 「取不到返回 null」，这条保证是给消费方拼回落链用的（`settings.tag ?: platformLanguageTag()`），
+    // 不能挪到这里来，否则那种写法会把 "und" 原样发出去。
+    private fun resolveLocale(): String? =
+        localeProvider().usableTag() ?: platformLanguageTag()
 
     /** `POST /code/verify`，成功即建立会话并落盘。 */
     public suspend fun verifyCode(email: String, code: String): AuthSession =
