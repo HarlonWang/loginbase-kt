@@ -7,7 +7,7 @@ package wang.harlon.loginbase
  * 本仓不留副本。分仓后两端版本线独立——客户端有自己的版本号，靠这个常量声明
  * 「我实现的是哪一版协议」，两端版本号不追求相等。
  */
-public const val PROTOCOL_VERSION: String = "1.2.0"
+public const val PROTOCOL_VERSION: String = "1.3.0"
 
 /**
  * 协议错误码（`{"error": "..."}` 的取值）。与 protocol.md 的错误码总表一一对应，
