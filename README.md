@@ -184,7 +184,7 @@ engine 的生命周期仍归你，`AuthClient.close()` 不会关它。**为什�
 
 ## 状态
 
-核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。62 个测试。
+核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。64 个测试。
 
 ### 登录态
 
