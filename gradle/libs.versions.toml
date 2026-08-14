@@ -18,6 +18,10 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 # 库自带会重复引入，也违背依赖最小集
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
+# 仅测试用：验证 README 接入指南第 2 步那段 Auth 插件接线真能编译、真能跑通。
+# 不进产物，故不违反「依赖最小集」——库自己绝不引它（BearerTokens 在这个包里，
+# 引了就等于把 ktor 的插件 API 写进本库的公开契约）。
+ktor-client-auth = { module = "io.ktor:ktor-client-auth", version.ref = "ktor" }
 
 [plugins]
 android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }

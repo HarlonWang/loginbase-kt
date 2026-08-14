@@ -77,6 +77,8 @@ val api = HttpClient(okHttpEngine) {
 
 需要 `ktor-client-auth`（本库自己不依赖它，见「设计红线」）。
 
+> 上面这段接线有[可执行版本](library/src/commonTest/kotlin/wang/harlon/loginbase/ReadmeIntegrationTest.kt)：两个各装了 `Auth` 插件的 client 同时 401，断言服务端**只被刷新一次**；配套一个反例用例证明绕过 `auth.refresh()` 会刷两次。改这段文档时请一起改那个测试。
+
 ### 3. 启动时恢复
 
 ```kotlin

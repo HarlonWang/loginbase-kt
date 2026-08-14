@@ -233,7 +233,8 @@
   - 而且 `BearerTokens` 在 `ktor-client-auth` 里，本库只依赖 `ktor-client-core`，发任何 ktor-Auth 风味的辅助函数都会破依赖最小集红线
 - **本库唯一不可替代的那一块已经在了**：ktor 插件的单飞是 **per-client**，App 有几个 `HttpClient` 就并发刷几次；跨 client 收敛只有本库的锁能做。所以正确形态是「插件的 `refreshTokens` 里调 `auth.refresh()`」，两层单飞叠加。
 - **落地**：README 的「用法」改写成**接入指南**，六步走完 + 业务代码长什么样 + 「出现这些就是接错了」的反模式表。重点标注了 `refreshTokens` 必须调 `auth.refresh()`——绕过它照样能跑通、功能完全正常、没有任何报错，只是每次悄悄烧一格救活配额，等撞穿配额把用户强制登出时已经很难查。
-- **没做的**：集成测试（用 `ktor-client-auth` 作 test-only 依赖验证这套配方真能跑通，并实证「装了 `Auth` 插件的 client 与本库共存不死锁」）。留作可选项。
+- **补做的集成测试**：`ReadmeIntegrationTest` 把指南第 2 步的接线**逐字**放进测试，两个各装 `Auth` 插件的 client 同时 401，断言服务端只被刷新一次；同时实证了「装了 `Auth` 插件的 client 与本库共存不会死锁」（死锁的话用例会直接挂住）。配一个**反例用例**：绕过 `auth.refresh()` 自己打刷新接口 → 服务端被刷两次。反例的作用是让正例那个 `== 1` 的断言有意义，而不是碰巧成立。
+- `ktor-client-auth` 只作 `testImplementation`，不进产物。库自己绝不引它——`BearerTokens` 在那个包里，引了就等于把 ktor 的插件 API 写进本库的公开契约。
 
 ### [ ] 26. OAuth 浏览器环节与回调解析都甩给了 App
 

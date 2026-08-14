@@ -4,7 +4,6 @@ import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
-import io.ktor.client.engine.mock.MockRequestHandler
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.respondError
 import io.ktor.client.request.HttpResponseData
@@ -14,15 +13,11 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -30,36 +25,6 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-
-private const val BASE = "https://api.example.com/auth"
-
-private fun jsonHeaders() = headersOf(HttpHeaders.ContentType, "application/json")
-
-private fun clientWith(
-    store: TokenStore,
-    handler: MockRequestHandler,
-): Pair<AuthClient, MockEngine> {
-    val engine = MockEngine(handler)
-    return AuthClient(BASE, store) {
-        httpEngine = engine
-        timeoutMillis = TEST_TIMEOUT_MS
-    } to engine
-}
-
-/** 超时在测试里调小，否则「请求挂住」的用例要真等 15 秒 */
-private const val TEST_TIMEOUT_MS = 2_000L
-
-/**
- * 跑在**真实时钟**上的测试。
- *
- * 单飞锁的保险丝走 `withTimeout`，用的是协程的时钟。`runTest` 的虚拟时钟在测试协程
- * 一挂起时就会把时间跳到下一个定时事件——而 MockEngine 跑在真实 dispatcher 上，于是
- * 每次请求都会「瞬间」熔断。切到真实 dispatcher 后行为与生产一致，副产品是 8 个并发
- * 调用真的并行，单飞逻辑得到的是更硬的验证。
- */
-private fun authTest(body: suspend CoroutineScope.() -> Unit) = runTest {
-    withContext(Dispatchers.Default) { body() }
-}
 
 class AuthClientTest {
 
