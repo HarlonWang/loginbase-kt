@@ -3,6 +3,7 @@ package wang.harlon.loginbase
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.pluginOrNull
 import io.ktor.client.request.delete
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -13,6 +14,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.encodeURLParameter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,11 +32,20 @@ import kotlinx.serialization.json.jsonPrimitive
 /**
  * loginbase 客户端。协议权威见服务端仓 `docs/protocol.md`；本类实现 [PROTOCOL_VERSION]。
  *
- * ## 请把它当单例持有
+ * ## 请把它当单例持有（每进程一个）
  *
  * 单飞 refresh 的互斥锁是**实例字段**——两个实例就是两把锁，并发刷新会同时打到服务端，
  * 正是要避免的事。Logto 时代的教训更狠：那时 client 跟着 Activity 重建，旧实例的在途
  * 刷新与新实例互不互斥，轮换竞态跨实例复活。所以：**一个 App 一个 AuthClient**。
+ *
+ * 准确的边界是**每进程一个**：锁随进程存在，跨进程不生效。
+ * Android 的 `:remote` 进程、iOS 的 App + Widget/Extension 若各自建实例，
+ * 就是各刷各的，会消耗服务端的救活配额（1h/3 次护栏，超了整条会话被判盗用撤销）。
+ * 有这种结构时，跨进程互斥要由消费方自己保证——库刻意不做跨进程锁，
+ * 因为失败代价不对称：没有它最坏是多刷一次，有了它最坏是认证彻底卡死
+ * （Supabase 用 Web Locks 做跨标签页锁，换来的正是一串孤儿锁/死锁故障）。
+ * 业界同形：Auth0 的 CredentialsManager 同样只保证实例内串行，并在文档里
+ * 明写「不要从多个实例调用续期方法」。
  *
  * ## 为什么不解析 JWT
  *
@@ -74,12 +85,23 @@ public class AuthClient(
     // 惰性初始化：engine 由消费方提供，无参构造 HttpClient 在 classpath 没有 engine 时
     // 会直接抛异常。不发 HTTP 的 API（githubSignInUrl 拼串、restore 读存储）不该被这个
     // 要求连坐——真正发请求时才需要 engine。
+    // 注入的 client 若一个超时都没配，一个挂住的请求会**永久持有单飞锁**，把所有等锁
+    // 的调用一起拖死（Supabase 的孤儿锁故障就是这个形态）。故此处补一道保险丝：
+    // 只在消费方没装 HttpTimeout 时才装，且用宽松值——绝不覆盖消费方自己的设置。
+    // `config {}` 复用同一个 engine，不额外开连接池。
     private val http: HttpClient by lazy {
-        httpClient ?: HttpClient {
+        val injected = httpClient ?: return@lazy HttpClient {
             install(HttpTimeout) {
                 requestTimeoutMillis = TIMEOUT_MS
                 connectTimeoutMillis = TIMEOUT_MS
                 socketTimeoutMillis = TIMEOUT_MS
+            }
+        }
+        if (injected.pluginOrNull(HttpTimeout) != null) {
+            injected
+        } else {
+            injected.config {
+                install(HttpTimeout) { requestTimeoutMillis = LOCK_FUSE_TIMEOUT_MS }
             }
         }
     }
@@ -202,8 +224,12 @@ public class AuthClient(
      *    直接复用其结果，不再打一次服务端。少了这一步，N 个并发调用会变成 N 次刷新。
      *
      * 与 Logto 时代的一处差异：那时要给锁加 30 秒超时守卫，因为刷新藏在 SDK 的异步
-     * 回调里、解析炸掉时 completion 永远不来。这里 HTTP 调用是我们自己的，ktor 的
-     * 超时保证它必定返回，`withLock` 的 finally 保证锁必定释放，故不需要额外守卫。
+     * 回调里、解析炸掉时 completion 永远不来。这里 HTTP 调用是我们自己的，`withLock`
+     * 的 finally 保证锁必定释放——但**请求本身必须有限时**：库自建的 client 装了
+     * `HttpTimeout`，而消费方注入的 client（文档鼓励注入以复用连接池）未必配了超时，
+     * 一个挂住的请求就会永久持锁，所有等锁的调用一起卡死。故这里加一道
+     * [LOCK_FUSE_TIMEOUT_MS] 保险丝（只在注入的 client 没装 HttpTimeout 时补装），
+     * 它刻意宽松——职责是「别让锁永远握着」，不是替消费方决定超时值。
      */
     public suspend fun refresh(): RefreshOutcome {
         val before = tokenStore.load() ?: return RefreshOutcome.NoSession.also { signedOut() }
@@ -226,8 +252,11 @@ public class AuthClient(
                     contentType(ContentType.Application.Json)
                     setBody(jsonBody(mapOf("refreshToken" to current.refreshToken)))
                 }
+            } catch (e: CancellationException) {
+                // 调用方主动取消：如实传播，不吞成 Failed（否则破坏结构化并发）
+                throw e
             } catch (e: Exception) {
-                // 网络层失败：会话可能好好的，**绝不清**
+                // 网络层失败（含超时）：会话可能好好的，**绝不清**
                 return@withLock RefreshOutcome.Failed(e)
             }
 
@@ -359,6 +388,10 @@ public class AuthClient(
 
     private companion object {
         const val TIMEOUT_MS = 15_000L
+
+        // 单飞锁的保险丝：只在注入的 client 没配任何超时时才用，故取宽松值——
+        // 它的职责是「别让锁永远握着」，不是替消费方决定请求该多久超时
+        const val LOCK_FUSE_TIMEOUT_MS = 45_000L
         const val DEFAULT_COOLDOWN = 60
     }
 }

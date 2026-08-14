@@ -47,9 +47,25 @@ auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新
 
 `HttpClient` 的 **engine 不由本库提供**——消费方 classpath 里要有（Android `ktor-client-okhttp` / iOS `ktor-client-darwin`），多数 KMP App 本来就有。
 
+### 单飞 refresh 的边界：每进程一个实例
+
+服务端每次 refresh 必轮换，并对「拿已作废令牌来刷」做救活判定——**救活有 1h/3 次护栏，超了按盗用撤销整条会话**（用户被登出）。并发刷新会白白烧这个配额，所以本库用互斥锁 + 进锁后重读把并发收敛成一次真实请求。
+
+**锁是实例字段，作用域是「一个进程」**：
+
+| | 覆盖 |
+|---|---|
+| 同进程多协程并发 401 | ✅ 收敛成 1 次 |
+| 进程被杀后重启重试 | ❌ 锁随进程消失（设计如此：走服务端的诚实重试救活，正常消耗 1 格配额） |
+| **多进程**（Android `:remote`、iOS App + Widget/Extension 各建实例） | ❌ 各刷各的，会烧配额 |
+
+有多进程结构时，跨进程互斥需消费方自己保证。**本库刻意不做跨进程锁**——失败代价不对称：没有它最坏是多刷一次，有了它最坏是认证彻底卡死（Supabase 用 Web Locks 做跨标签页锁，换来的正是一串孤儿锁与死锁故障）。业界同形：Auth0 的 `CredentialsManager` 同样只保证实例内串行，文档里明写「不要从多个实例调用续期方法」。
+
+> Ktor 的 `Auth` 插件也内建单飞，但它只协调**装了该插件的那一个 `HttpClient`**。App 通常有多个 client（业务 API、图片、第三方），各刷各的照样烧配额——所以两者是叠加不是替代：可以在自己的 client 上装 `Auth` 插件、`refreshTokens` 回调里调 `authClient.refresh()`，由本库的锁保证全局只刷一次。
+
 ## 状态
 
-核心已实现：`AuthClient`（邮箱验证码 / GitHub OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。33 个测试。
+核心已实现：`AuthClient`（邮箱验证码 / GitHub OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。34 个测试。
 
 ### 邮件语言（protocol 1.3.0）
 
