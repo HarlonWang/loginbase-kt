@@ -35,29 +35,122 @@ Maven      wang.harlon:loginbase-kt      （Maven Central，本仓 tag 触发 CI
 包名        wang.harlon.loginbase
 ```
 
-## 用法
+## 接入指南
+
+按这六步接完，**业务代码里不会再出现任何 token 相关的东西**。
+
+### 1. 建实例（DI 单例，一个 App 一个）
 
 ```kotlin
-// 一个 App 一个实例——单飞 refresh 的锁是实例字段，两个实例就是两把锁
 val auth = AuthClient(
     baseUrl = "https://api.example.com/auth",
     tokenStore = SharedPreferencesTokenStore(context),
 ) {
-    httpEngine = myEngine                                // 可选，见 LoginbaseConfig；不写则由 ktor 发现
+    httpEngine = okHttpEngine          // 可选；和业务共用一个 engine，连接池也共用
 }
-auth.restore()                                           // 启动时恢复登录态
+```
 
-auth.sendCode("a@b.com")                                 // 邮箱验证码（自动带上 App 显示语言）
-auth.verifyCode("a@b.com", "123456")                     // 成功即落盘
+跟着 Activity/ViewModel 重建会**让单飞失效**——锁是实例字段，两个实例就是两把锁。
 
-openInBrowser(auth.signInUrl(OAuthProvider.GitHub, "app://cb"))   // 社交登录，回跳带 otc
+### 2. 业务 client 装一次 `Auth` 插件
+
+```kotlin
+val api = HttpClient(okHttpEngine) {
+    install(Auth) {
+        bearer {
+            loadTokens {
+                // refresh token 归本库管，插件不需要知道，传 null 即可
+                auth.accessToken()?.let { BearerTokens(it, null) }
+            }
+            refreshTokens {
+                when (val r = auth.refresh()) {
+                    is RefreshOutcome.Success -> BearerTokens(r.tokens.accessToken, null)
+                    else -> null       // 放弃：请求把 401 返给调用方，导航交给第 4 步
+                }
+            }
+        }
+    }
+}
+```
+
+**`refreshTokens` 里一定要调 `auth.refresh()`，不要自己去 POST `/refresh`。** ktor 插件的单飞是 **per-client** 的，App 里有几个 `HttpClient` 就会并发刷几次；而并发刷新会烧掉服务端的救活配额（1h/3 次，超了整条会话按盗用撤销）。绕过本库照样能跑通，**功能完全正常、没有任何报错**，只是每次 token 过期偷偷烧一格——等撞穿配额把用户强制登出时已经很难查了。走 `auth.refresh()` 则由本库的锁做**跨 client** 收敛。
+
+需要 `ktor-client-auth`（本库自己不依赖它，见「设计红线」）。
+
+### 3. 启动时恢复
+
+```kotlin
+auth.restore()
+```
+
+### 4. 一处观察 `authState` 做导航
+
+```kotlin
+auth.authState.collect { state ->
+    when (state) {
+        AuthState.Unknown          -> Unit                 // 还没 restore，别急着跳转
+        AuthState.SignedIn         -> Unit                 // 正常用
+        is AuthState.RefreshFailed -> showOfflineBadge()   // 别踢到登录页！会话还在，多半只是弱网
+        is AuthState.SignedOut     -> {
+            navigateToLogin()
+            if (state.reason is SignOutReason.SessionEnded) {
+                toast("登录已失效，请重新登录")             // 只有这一种才提示
+            }
+        }
+    }
+}
+```
+
+放一处，别散在各页面——散开之后「什么时候该跳登录页」就没有单一答案了。
+
+### 5. 登录界面
+
+```kotlin
+// 邮箱验证码
+val cooldown = auth.sendCode(email).cooldownSeconds   // 倒计时用服务端给的值，别写死
+auth.verifyCode(email, code)                          // 成功即落盘，authState 自动变 SignedIn
+
+// 社交登录：交给系统浏览器，不要用 WebView
+openInBrowser(auth.signInUrl(OAuthProvider.GitHub, "cn.example://auth/callback"))
+
+// deep link 回来时
+val otc = uri.getQueryParameter("otc") ?: return
 auth.exchangeOtc(otc)
 
-openInBrowser(auth.linkUrl(OAuthProvider.GitHub, "app://cb"))     // 已登录用户绑定第二身份
-
-auth.accessToken()                                       // 业务请求带上
-auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新重试
+// 已登录用户绑定第二身份：回跳参数是 linked=<provider> 或 error=<reason>，不是 otc
+openInBrowser(auth.linkUrl(OAuthProvider.GitHub, "cn.example://auth/callback"))
 ```
+
+### 6. 登出
+
+```kotlin
+auth.signOut()        // 或 signOutAll() 登出该用户全部会话
+```
+
+---
+
+### 接完之后，业务代码长这样
+
+```kotlin
+class FeedApi(private val api: HttpClient) {
+    suspend fun feed(): Feed = api.get("$BASE/api/feed").body()
+}
+```
+
+带 token、认 401、刷新、重试——**一个字都不用写**。
+
+### 出现下面这些，就是接错了
+
+| 业务代码里出现 | 说明 |
+|---|---|
+| `auth.accessToken()` | 有人在手动带 token，绕过了插件——401 重试就没人管了 |
+| `auth.accessToken(forceRefresh = true)` | **最危险**：手动刷新，每次调用都打一次 `/refresh`，直接烧配额 |
+| `try { } catch (401)` | 插件已经处理过了，重复 |
+| `AuthClient(...)` 出现在 Activity/ViewModel 里 | 单飞失效，多实例各刷各的 |
+
+> 多个业务 client 且 401 错开发生时，会多一次令牌轮换（不烧配额，因为用的是有效令牌）。想连这次也省掉，可以在 `refreshTokens` 里先比对 `oldTokens?.accessToken` 与 `auth.accessToken()`：不一样就说明别人已经刷过了，直接用新的。
+
+## engine 与 `HttpClient`
 
 `HttpClient` 的 **engine 不由本库提供**——消费方 classpath 里要有（Android `ktor-client-okhttp` / iOS `ktor-client-darwin`），多数 KMP App 本来就有。
 
@@ -71,7 +164,7 @@ AuthClient(baseUrl, store) {
 
 engine 的生命周期仍归你，`AuthClient.close()` 不会关它。**为什么只收 engine 不收整个 `HttpClient`**（简短版：注入 client 会让 `POST /refresh` 跑在一套未知插件上，ktor 的 `Auth` 会死锁、`HttpRequestRetry` 会把一次刷新放大成四次）见 [`docs/design.md`](docs/design.md) 第 3 节。
 
-### 单飞 refresh 的边界：每进程一个实例
+## 单飞 refresh 的边界：每进程一个实例
 
 服务端每次 refresh 必轮换，并对「拿已作废令牌来刷」做救活判定——**救活有 1h/3 次护栏，超了按盗用撤销整条会话**（用户被登出）。并发刷新会白白烧这个配额，所以本库用互斥锁把并发收敛成一次真实请求：进锁后若发现「等锁期间已经有人跑完了一整轮」，直接复用那一轮的结果。
 
@@ -93,18 +186,12 @@ engine 的生命周期仍归你，`AuthClient.close()` 不会关它。**为什�
 
 ### 登录态
 
-`authState: StateFlow<AuthState>` 四态，每一态对应一个不同的 UI 处置：
+`authState: StateFlow<AuthState>` 四态，怎么用见[接入指南第 4 步](#4-一处观察-authstate-做导航)。
 
-| 态 | UI 该做什么 |
-|---|---|
-| `Unknown` | 等 `restore()`，别急着跳转 |
-| `SignedIn` | 正常用 |
-| `RefreshFailed(cause)` | **别踢到登录页**——会话还在，多半只是弱网；刷成功会自动回到 `SignedIn` |
-| `SignedOut(reason)` | 去登录页；是否提示看 `reason` |
+两个容易接错的点：
 
-`SignOutReason` 三种，区别只在**文案**：`NoSession`（冷启动没令牌）和 `UserInitiated`（用户自己点的登出）都不该提示任何东西，只有 `SessionEnded(reason)` 才该弹「登录已失效，请重新登录」——它携带的 `RefreshFailure` 可用来细化文案。
-
-把这三种混成一个「已登出」信号的后果：用户自己点登出却被弹「登录已失效」（骚扰），或者会话被服务端撤销了却一声不吭跳回登录页（用户以为 App 有 bug）。
+- **`RefreshFailed` 不是登出**。会话没被清、服务端也没说它死了，多半只是弱网。当登出处理就是把漫游、地铁里的用户踢下线。刷新成功会自动回到 `SignedIn`。
+- **`SignOutReason` 三种的区别只在文案**：`NoSession`（冷启动没令牌）和 `UserInitiated`（用户自己点的登出）都不该提示任何东西，只有 `SessionEnded(reason)` 才该弹「登录已失效」。混成一个信号的后果是：用户自己点登出却被弹「登录已失效」（骚扰），或者会话被撤销了却一声不吭跳回登录页（用户以为 App 有 bug）。`SessionEnded` 携带的 `RefreshFailure` 可用来细化文案。
 
 ### 错误处理
 

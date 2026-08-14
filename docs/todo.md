@@ -219,11 +219,21 @@
 ## P3 — 架构、工程与文档（12 条）
 
 - **落地**：删掉，并补一句注释说明这个 `Json` 实例的职责边界（只做 `JsonObject` 与文本的互转，没有任何 `@Serializable` 类经过它），免得后人再往里加配置。
-### [ ] 25. 缺 HTTP 集成件，401 重试样板留给每个调用点
+### [x] 25. 缺 HTTP 集成件，401 重试样板留给每个调用点 — 已完成（重新定义了交付物）
 
 - **位置**：新增
 - **问题**：库只给 `accessToken(forceRefresh = true)`，没有任何 HTTP 集成件；README 只好建议消费方自己装 ktor `Auth` 插件，而那条建议会死锁（第 15 条）。对比：supabase-kt 由 `SupabaseClient` 内部统一挂载；Auth0 文档直接给 OkHttp Interceptor 范式。
 - **修法**：官方提供 `AuthClient.installOn(HttpClient)`，内部给自身请求打标记以规避递归刷新。
+
+- **原修法不可实现**：`AuthClient.installOn(client)` 做不到——ktor 的插件只能在 client 构造时装，装不到已建好的 client 上；唯一绕法是 `client.config { }`，而那正是第 13 条的 engine refcount 泄漏。
+- **查了业界之后，结论是不该自己写插件**：
+  - ktor 的 `Auth` + `bearer {}` 已经把「带头 / 401 自动重试 / 单 client 内并发收敛」全做了（[官方文档](https://ktor.io/docs/client-bearer-auth.html) 明写「multiple requests fail with 401 at the same time → refresh only once」）
+  - OkHttp 那边对应的是专为此设计的 `Authenticator` 接口
+  - Auth0.Android 的 `EXAMPLES.md` 里**只有示例代码，没有 shipped 的 interceptor/authenticator**——通用模式就是「SDK 暴露取 token / 刷 token，接线交给 HTTP 栈自带的机制」
+  - 而且 `BearerTokens` 在 `ktor-client-auth` 里，本库只依赖 `ktor-client-core`，发任何 ktor-Auth 风味的辅助函数都会破依赖最小集红线
+- **本库唯一不可替代的那一块已经在了**：ktor 插件的单飞是 **per-client**，App 有几个 `HttpClient` 就并发刷几次；跨 client 收敛只有本库的锁能做。所以正确形态是「插件的 `refreshTokens` 里调 `auth.refresh()`」，两层单飞叠加。
+- **落地**：README 的「用法」改写成**接入指南**，六步走完 + 业务代码长什么样 + 「出现这些就是接错了」的反模式表。重点标注了 `refreshTokens` 必须调 `auth.refresh()`——绕过它照样能跑通、功能完全正常、没有任何报错，只是每次悄悄烧一格救活配额，等撞穿配额把用户强制登出时已经很难查。
+- **没做的**：集成测试（用 `ktor-client-auth` 作 test-only 依赖验证这套配方真能跑通，并实证「装了 `Auth` 插件的 client 与本库共存不死锁」）。留作可选项。
 
 ### [ ] 26. OAuth 浏览器环节与回调解析都甩给了 App
 
