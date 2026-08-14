@@ -4,7 +4,7 @@
 >
 > **范围约定**：iOS 长期只做占位，不承诺可用，故 iOS 侧的 Swift 互操作、`NSUserDefaultsTokenStore`、`PlatformLocale.ios.kt` 的功能性问题一律不计。`explicitApi()` 的取舍见第 37 条（已决定不开，代价与缓解手段记录在案）。
 >
-> 共 35 条。P0 是「只有发 1.0 前这一个窗口」的破坏性变更，优先级高于 P1 的正确性 bug。
+> 共 34 条。P0 是「只有发 1.0 前这一个窗口」的破坏性变更，优先级高于 P1 的正确性 bug。
 
 ---
 
@@ -241,12 +241,6 @@
 - **位置**：`AuthClient.kt:160-168`
 - **问题**：`githubSignInUrl()` 只返回字符串，README 让消费方自己 `openInBrowser(...)`。业界（Auth0、Firebase、AppAuth、Clerk）都把这步收进 SDK，Android 用 Custom Tabs / 新的 AuthTab——不是为省事，而是回调拦截、用户取消这些点每个接入方都会踩。`:161` 的注释自己强调了「不要用内置 WebView」，**但把执行这条纪律的责任推给了调用方**。另外 `exchangeOtc` 要 App 自己从 deep link 抠 `otc`，而 link 流程回跳的是 `linked=github` / `error=already_linked`，完全另一套，库连 `parseCallback(uri)` 都没提供。
 - **修法**：Android 侧提供 Custom Tabs 启动器 + `parseCallback(uri)`；至少先补 `parseCallback`，成本最低收益最直接。
-
-### [ ] 28. 推动服务端在响应里返回 `expiresIn`
-
-- **位置**：协议层，需在服务端仓开 issue
-- **问题**：不解析 JWT 的决策成立（`AuthClient.kt:50` 的时钟偏差理由很扎实），但代价是**每次冷启动第一个请求必然 401 → 多一次往返 + 一次刷新配额**。Auth0 的 `CredentialsManager.getCredentials(minTtl)` 主动刷新正是为了省掉这个。
-- **修法**：让服务端在 verify/refresh 响应里返回 `expiresIn`（**相对秒数**）。相对时长天然不受设备时钟偏差影响，两个好处能同时拿到。
 
 ### [x] 29. 有个测试真实耗时 45 秒 — 已完成（随第 14 条）
 
