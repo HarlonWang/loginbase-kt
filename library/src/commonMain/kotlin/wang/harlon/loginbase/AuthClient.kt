@@ -139,6 +139,17 @@ class AuthClient(
      */
     private val storeMutex = Mutex()
 
+    /**
+     * 已完成的刷新轮次。**单飞共享的载体**——见 [refresh] 对「轮次」的说明。
+     *
+     * 用 [MutableStateFlow] 而不是普通 `var`：[id] 要在锁**外**读（那正是它的意义），
+     * 不能依赖 [refreshMutex] 提供的内存语义。id 与 outcome 装在同一个对象里，
+     * 保证两者被一起读到，不会读出错配的组合。
+     */
+    private data class RefreshRound(val id: Int, val outcome: RefreshOutcome?)
+
+    private val lastRound = MutableStateFlow(RefreshRound(id = 0, outcome = null))
+
     private val _authState = MutableStateFlow<AuthState>(AuthState.Unknown)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
 
@@ -258,8 +269,24 @@ class AuthClient(
      * 必须保证同一时刻至多一条真实刷新在飞：
      *
      * 1. 互斥锁串行化；
-     * 2. **进锁后重读存储**——等锁期间若别人已经刷成功（refresh token 变了），
-     *    直接复用其结果，不再打一次服务端。少了这一步，N 个并发调用会变成 N 次刷新。
+     * 2. **进锁后判断「等锁期间有没有人跑完过一整轮」**，有就复用他的结果，不再
+     *    打一次服务端。少了这一步，N 个并发调用会变成 N 次刷新。
+     *
+     * ## 什么是「一轮」
+     *
+     * 一轮 = 一次真正打到服务端的尝试（[runRound]），无论结果是成功、会话终结还是
+     * 失败。每跑完一轮，[lastRound] 的编号 +1 并记下结果。调用方在**进锁前**记下当时
+     * 的编号，进锁后编号变了就说明「我排队这段时间里有人替我把活干了」。
+     *
+     * **失败也共享，这是关键**。早先的判据是「存储里的 refresh token 变了没有」，
+     * 那个信号只在成功时才响：刷新失败时存储纹丝不动，等待者看到的世界和「一次刷新
+     * 都没发生过」一模一样，于是各自又发一次。后果是排队时间线性叠加，更糟的是——
+     * 服务端若已经处理掉那次请求（回执丢在回程），后续每一次都是拿**已作废的令牌**
+     * 去刷，每次烧掉一格救活配额，几轮就撞穿护栏、整条会话按盗用撤销，用户被强制登出。
+     * 单飞要防的正是这件事。
+     *
+     * 共享的边界是「同一批等待者」，**不需要 TTL**：一轮结束之后才进来的调用方，
+     * 读到的已经是新编号，进锁后发现编号没变，自然会发起真实刷新。
      *
      * 与 Logto 时代的一处差异：那时要给锁加 30 秒超时守卫，因为刷新藏在 SDK 的异步
      * 回调里、解析炸掉时 completion 永远不来。这里 HTTP 调用是我们自己的，`withLock`
@@ -270,25 +297,39 @@ class AuthClient(
      * 它刻意宽松——职责是「别让锁永远握着」，不是替消费方决定超时值。
      */
     suspend fun refresh(): RefreshOutcome {
-        val before = tokenStore.load()
-            ?: return RefreshOutcome.NoSession
+        if (tokenStore.load() == null) {
+            return RefreshOutcome.NoSession
                 .also { signedOutUnlessAlready(SignOutReason.NoSession) }
+        }
+
+        // 【必须在锁外读】记的是「我什么时候来排队的」。挪进锁里它就永远等于当前值，
+        // 判断恒不成立，整个单飞静默退化成「各刷各的」——不报错、不崩，只是变慢变贵。
+        val entryRound = lastRound.value.id
 
         return refreshMutex.withLock {
+            val completed = lastRound.value
+            // 【必须排在读存储之前】等锁期间跑完了一整轮，复用它的结果。
+            // 排到读存储之后的话，会话被 401 清掉时等待者会先掉进下面的 NoSession
+            // 早返回，拿不到 SessionEnded 的归因，这条共享就白做了。
+            if (completed.id != entryRound) {
+                return@withLock completed.outcome
+                    ?: RefreshOutcome.NoSession // 不可达：id 推进过就必然带着结果
+            }
+
             val current = tokenStore.load() ?: run {
                 // 等锁期间会话没了（并发 signOut，或别人刷到 401 清了会话）。
                 // 那些路径本身都已置过 SignedOut，这里再置一次是幂等的防御——
                 // 与锁外的早返回分支对称，不依赖「别人一定记得置」这个不变式。
                 // 用 UnlessAlready：别人写下的原因比这里的 NoSession 精确得多。
+                //
+                // 这条**不记轮次**：一个字节都没发出去，不构成一轮。
                 signedOutUnlessAlready(SignOutReason.NoSession)
                 return@withLock RefreshOutcome.NoSession
             }
-            if (current.refreshToken != before.refreshToken) {
-                // 等锁期间别人刷新成功了，复用——单飞的关键一步
-                return@withLock RefreshOutcome.Success(current)
-            }
 
-            runRound(current)
+            val outcome = runRound(current)
+            lastRound.value = RefreshRound(entryRound + 1, outcome)
+            outcome
         }
     }
 

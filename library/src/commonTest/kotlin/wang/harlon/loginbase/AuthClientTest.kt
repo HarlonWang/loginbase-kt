@@ -64,6 +64,74 @@ class AuthClientTest {
     }
 
     @Test
+    fun `并发刷新失败时也只打一次服务端`() = runTest {
+        // 单飞不能只共享成功。失败时存储纹丝不动，等待者看到的世界和「一次刷新都没
+        // 发生过」一样——若据此各自再发一次，服务端在回执丢失的情况下会把每一次都
+        // 判成「拿已作废令牌来刷」，几轮就撞穿 1h/3 次救活护栏、整条会话按盗用撤销。
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        var calls = 0
+        val (client, _) = clientWith(store) {
+            calls++
+            delay(50) // 让并发真的重叠
+            respondError(HttpStatusCode.InternalServerError)
+        }
+
+        val results = (1..8).map { async { client.refresh() } }.awaitAll()
+
+        assertEquals(1, calls, "失败也必须收敛成一次真实请求")
+        assertTrue(results.all { it is RefreshOutcome.Failed }, "八个调用方都该拿到同一个失败")
+        assertNotNull(store.load(), "失败不清会话")
+    }
+
+    @Test
+    fun `会话被撤销时，等待者拿到的是 SessionEnded 而不是降级的 NoSession`() = runTest {
+        // 复用判断必须排在「读存储」之前。排在之后的话，第一个调用方清掉存储后，
+        // 等待者会掉进锁内的 NoSession 早返回，撤销归因就丢了——UI 分不清
+        // 「会话被撤销」和「本来就没登录」
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        var calls = 0
+        val (client, _) = clientWith(store) {
+            calls++
+            delay(50)
+            respond(
+                """{"error":"invalid_refresh_token","reason":"session_revoked"}""",
+                HttpStatusCode.Unauthorized,
+                jsonHeaders(),
+            )
+        }
+
+        val results = (1..8).map { async { client.refresh() } }.awaitAll()
+
+        assertEquals(1, calls)
+        results.forEachIndexed { i, outcome ->
+            val ended = assertIs<RefreshOutcome.SessionEnded>(outcome, "第 ${i + 1} 个调用方")
+            assertEquals(RefreshFailure.SESSION_REVOKED, ended.reason)
+        }
+    }
+
+    @Test
+    fun `一轮结束之后才来的调用方仍会发起真实刷新`() = runTest {
+        // 共享的边界是「同一批等待者」，不是「缓存上次结果」。否则一次失败会把后续
+        // 所有刷新永久钉死在那个失败上，网络恢复了也起不来
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        var calls = 0
+        var down = true
+        val (client, _) = clientWith(store) {
+            calls++
+            if (down) respondError(HttpStatusCode.ServiceUnavailable)
+            else respond("""{"accessToken":"a1","refreshToken":"r1"}""", HttpStatusCode.OK, jsonHeaders())
+        }
+
+        assertIs<RefreshOutcome.Failed>(client.refresh())
+        assertEquals(1, calls)
+
+        down = false
+        assertIs<RefreshOutcome.Success>(client.refresh(), "上一轮的失败不该被缓存给新来的调用方")
+        assertEquals(2, calls)
+        assertEquals("r1", store.load()?.refreshToken)
+    }
+
+    @Test
     fun `刷新成功先落盘再宣告成功`() = runTest {
         // save 抛异常 = 没存住。此时必须报失败：若宣告成功而实际没存，
         // 下次会拿旧令牌去刷，正好触发服务端救活（有护栏）
