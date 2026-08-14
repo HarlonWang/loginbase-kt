@@ -251,11 +251,12 @@
 - **问题**：`build.yml` 跑在 ubuntu、只跑 `testAndroidHostTest`（编不了 iOS，合理）。于是 iOS 侧的编译错误要等到**打 tag 触发 `publish.yml`（macos runner）** 才暴露——那时 CI 已经在跑发布流程，一个占位 target 编译不过就能让一次正式发布失败。
 - **修法**：在 `publish.yml` 的发布步骤前加一次 `compileKotlinIosSimulatorArm64` 前置检查（快速失败，不污染发布），或单开一个低频的 macos 定时编译 job。
 
-### [ ] 34. README 会误导使用者以为 iOS 可用
+### [x] 34. README 会误导使用者以为 iOS 可用 — 已完成
 
 - **位置**：`README.md:5` `:32`
 - **问题**：第 5 行写「目标平台：Android、iOS（arm64 + simulator arm64）」，第 32 行用法示例里直接给了 `// iOS: NSUserDefaultsTokenStore()`。接入方按示例接了才会发现是占位。
 - **修法**：明写 iOS target 当前仅为占位/编译保障，不承诺可用。
+- **落地**：开头改成「目标平台：Android」，新增「iOS 是占位」一节，把三条不可用的具体理由摆出来（真机未验证、无 Swift 互操作保障即未标 `@Throws`/Flow 不可消费、CI 不跑 iOS 测试）；用法示例里那行 `// iOS: NSUserDefaultsTokenStore()` 删掉。开发一节补了「改 commonMain 形状后本地跑一次 iOS 编译」的提醒与理由。
 
 ### [ ] 35. 注释漂移与三处重复
 

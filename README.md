@@ -2,7 +2,19 @@
 
 > Kotlin Multiplatform client for [loginbase](https://github.com/HarlonWang/loginbase) — email OTP + social OAuth + session management.
 
-[loginbase](https://github.com/HarlonWang/loginbase)（Cloudflare Workers 服务端库）的 KMP 客户端。目标平台：Android、iOS（arm64 + simulator arm64）。
+[loginbase](https://github.com/HarlonWang/loginbase)（Cloudflare Workers 服务端库）的 KMP 客户端。
+
+**目标平台：Android。** iOS（arm64 + simulator arm64）的 target 存在，但**长期只作占位，不承诺可用**——见下。
+
+### iOS 是占位
+
+保留这两个 target 的实际作用只有一个：让 `commonMain` 在编译期就被约束住，不会悄悄写死 JVM API。除此之外**不要按「支持 iOS」来接入**：
+
+- `NSUserDefaultsTokenStore` 与 iOS 侧的语言取值**从未在真机链路上验证过**
+- **没有做 Swift 互操作保障**：public suspend 函数没标 `@Throws`，Swift 侧遇到 `LoginbaseException` 是**直接崩溃**而不是抛 Swift error；`authState` 是 Kotlin `StateFlow`，Swift 里也拿不到
+- CI 不跑 iOS 测试（`commonTest` 只在 Android 上跑过）
+
+要在 iOS 上用，先把上面三条补齐。
 
 ## 协议契约
 
@@ -29,7 +41,7 @@ Maven      wang.harlon:loginbase-kt      （Maven Central，本仓 tag 触发 CI
 // 一个 App 一个实例——单飞 refresh 的锁是实例字段，两个实例就是两把锁
 val auth = AuthClient(
     baseUrl = "https://api.example.com/auth",
-    tokenStore = SharedPreferencesTokenStore(context),   // iOS: NSUserDefaultsTokenStore()
+    tokenStore = SharedPreferencesTokenStore(context),
 ) {
     httpClient = myKtorClient                            // 可选，见 LoginbaseConfig；不写则库自建
 }
@@ -141,6 +153,8 @@ localeProvider = { settings.languageTag ?: Loginbase.appLanguageTag() }
 ./gradlew :library:testAndroidHostTest              # CI 跑的（ubuntu 编不了 iOS）
 ./gradlew :library:compileKotlinIosSimulatorArm64   # iOS 侧编译需 macOS
 ```
+
+**改动 `commonMain` 的形状后请本地跑一次 iOS 编译**（改 `expect` 签名、改 `TokenStore` 之类接口时，`iosMain` 的实现要跟着改）。CI 不做这件事：ubuntu runner 编不了 iOS，而为一个占位 target 在每个 PR 上起 macOS runner不划算。漏了也不会出坏产物——打 tag 时 `publish.yml` 跑在 macOS 上，编译不过就直接失败在构建阶段、早于任何上传，改完删 tag 重打即可。
 
 发布：打裸版本号 tag（如 `0.1.0`）触发 CI 在 macos runner 上 `publishAndReleaseToMavenCentral`。
 
