@@ -32,11 +32,14 @@
 - **修法**：统一包成第 2 条的 `LoginbaseException.Network(cause)`，原始异常放 `cause`。
 - **落地**：`request()` 与 `refresh()` 的传输层出口都包成 `Network`，原始异常放 `cause`；`request()` 新增的 catch 从一开始就先 rethrow `CancellationException`（不新造第 11 条那类 bug）。
 
-### [ ] 4. 构造函数直接扩展会破二进制兼容
+### [x] 4. 构造函数直接扩展会破二进制兼容 — 已完成
 
 - **位置**：`AuthClient.kt:69-74`
 - **问题**：4 参构造函数，往后加 `logger` / `retryPolicy` / `oauthProviders` 只能继续加默认参数。Kotlin 默认参数在 JVM 上编译成 synthetic constructor + bitmask，**加一个参数就破二进制兼容**——库已配好 Maven Central 发布链路，这是硬伤。
 - **修法**：`AuthClient(config: LoginbaseConfig)`，或 `AuthClient.build { }` DSL。
+- **落地**：`AuthClient(baseUrl, tokenStore) { ... }`——必填的留位置参数，可选的进 `LoginbaseConfig` DSL。
+- **注意（原修法里没写对的一点）**：`AuthClient(config: LoginbaseConfig)` 配 **data class** 是解决不了问题的——data class 的构造函数默认参数同样编译成 bitmask synthetic constructor，加字段照样破兼容。真正起作用的是让 `LoginbaseConfig` **可变**（`var` 属性）：加一个选项等于加一个字段 + getter/setter，这才是二进制兼容的。代价是配置对象可被调用方存出去后修改，故 `AuthClient` 在构造期把值读成不可变字段，并补了测试锁住这个语义。
+- **参照**：ktor `HttpClient(engine) {}`、supabase-kt `createSupabaseClient(url, key) {}` 都是「必填位置参数 + 可选 DSL」这个分法。
 
 ### [ ] 5. `fromWire()` 不该是公开 API
 

@@ -30,7 +30,9 @@ Maven      wang.harlon:loginbase-kt      （Maven Central，本仓 tag 触发 CI
 val auth = AuthClient(
     baseUrl = "https://api.example.com/auth",
     tokenStore = SharedPreferencesTokenStore(context),   // iOS: NSUserDefaultsTokenStore()
-)
+) {
+    httpClient = myKtorClient                            // 可选，见 LoginbaseConfig；不写则库自建
+}
 auth.restore()                                           // 启动时恢复登录态
 
 auth.sendCode("a@b.com")                                 // 邮箱验证码（自动带上 App 显示语言）
@@ -65,7 +67,7 @@ auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新
 
 ## 状态
 
-核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。40 个测试。
+核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。41 个测试。
 
 ### 错误处理
 
@@ -90,7 +92,7 @@ try {
 
 ```kotlin
 AuthClient(baseUrl, store)                                  // 什么都不写 = 跟随系统语言
-AuthClient(baseUrl, store, localeProvider = { settings.tag })  // App 内自选；返回 null = 没意见 → 回落系统语言
+AuthClient(baseUrl, store) { localeProvider = { settings.tag } }  // App 内自选；返回 null = 没意见 → 回落系统语言
 ```
 
 `null`（以及空串、`und`）只有一个含义——**「我没意见」**，回落系统语言，**不是「不要发」**。想一律某种语言就返回定值，如 `{ "en" }`。服务端对未知语言静默回落，故这条链路**不产生任何新的错误分支**。

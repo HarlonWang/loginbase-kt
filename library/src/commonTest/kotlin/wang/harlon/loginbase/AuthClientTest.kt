@@ -29,7 +29,7 @@ private fun clientWith(
     handler: MockRequestHandler,
 ): Pair<AuthClient, MockEngine> {
     val engine = MockEngine(handler)
-    return AuthClient(BASE, store, HttpClient(engine)) to engine
+    return AuthClient(BASE, store) { httpClient = HttpClient(engine) } to engine
 }
 
 class AuthClientTest {

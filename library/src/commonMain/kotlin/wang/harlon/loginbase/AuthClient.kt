@@ -58,22 +58,36 @@ import kotlinx.serialization.json.jsonPrimitive
  * 用法：业务请求带 [accessToken] 的返回值，收到 401 就 `accessToken(forceRefresh = true)`
  * 再重试一次；仍失败则看 [refresh] 的结果决定是否引导重新登录。
  *
+ * ```kotlin
+ * val auth = AuthClient(baseUrl, tokenStore)                 // 全默认
+ * val auth = AuthClient(baseUrl, tokenStore) {               // 带可选配置
+ *     httpClient = myClient
+ *     localeProvider = { settings.languageTag }
+ * }
+ * ```
+ *
  * @param baseUrl 服务端挂载点，如 `https://api.example.com/auth`（末尾斜杠会被去掉）
  * @param tokenStore 令牌持久化，见 [TokenStore] 对同步落盘的要求
- * @param httpClient 可注入自己的实例以复用连接池/日志；缺省时库自建。
- *   **不含 engine**——消费方 classpath 里要有（Android: okhttp / iOS: darwin），
- *   库不替你选（依赖最小集，且消费方通常已有）。
- * @param localeProvider 验证码邮件用什么语言（protocol 1.3.0）。缺省跟随系统语言。
- *   App 内有自己的语言设置时传它，**返回 `null` 表示「我没意见」→ 回落系统语言**，
- *   不是「不要发」。想一律某种语言就返回定值，如 `{ "en" }`。
+ * @param configure 可选配置，见 [LoginbaseConfig]——选项放在那里而不是做成构造函数
+ *   参数，是为了将来加选项时不破二进制兼容（理由见该类文档）
  */
 public class AuthClient(
     baseUrl: String,
     private val tokenStore: TokenStore,
-    httpClient: HttpClient? = null,
-    private val localeProvider: () -> String? = ::platformLanguageTag,
+    configure: LoginbaseConfig.() -> Unit = {},
 ) {
     private val base: String = baseUrl.trimEnd('/')
+
+    // 构造期就把配置读成不可变字段。LoginbaseConfig 刻意可变（可变才换来二进制兼容），
+    // 但调用方若在 lambda 里把 this 存了出去，之后再改不该影响已经建好的 client。
+    private val localeProvider: () -> String?
+    private val injectedHttpClient: HttpClient?
+
+    init {
+        val config = LoginbaseConfig().apply(configure)
+        localeProvider = config.localeProvider
+        injectedHttpClient = config.httpClient
+    }
 
     private val json = Json {
         ignoreUnknownKeys = true // 服务端加字段不该炸老客户端
@@ -91,7 +105,7 @@ public class AuthClient(
     // 只在消费方没装 HttpTimeout 时才装，且用宽松值——绝不覆盖消费方自己的设置。
     // `config {}` 复用同一个 engine，不额外开连接池。
     private val http: HttpClient by lazy {
-        val injected = httpClient ?: return@lazy HttpClient {
+        val injected = injectedHttpClient ?: return@lazy HttpClient {
             install(HttpTimeout) {
                 requestTimeoutMillis = TIMEOUT_MS
                 connectTimeoutMillis = TIMEOUT_MS

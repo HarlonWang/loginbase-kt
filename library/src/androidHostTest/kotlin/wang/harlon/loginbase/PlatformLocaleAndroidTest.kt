@@ -43,8 +43,9 @@ class PlatformLocaleAndroidTest {
                 headersOf(HttpHeaders.ContentType, "application/json"),
             )
         }
-        AuthClient("https://api.example.com/auth", InMemoryTokenStore(), HttpClient(engine))
-            .sendCode("u@x.com")
+        AuthClient("https://api.example.com/auth", InMemoryTokenStore()) {
+            httpClient = HttpClient(engine)
+        }.sendCode("u@x.com")
         return Json.parseToJsonElement(body).jsonObject
     }
 
