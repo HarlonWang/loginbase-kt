@@ -250,18 +250,21 @@
 - **修法**：把熔断值做成 `internal` 可注入参数，测试传小值。
 
 - **落地**：保险丝时长做成 `internal` 可配后，熔断用例从 45 秒降到 2 秒；整套测试合计 2.7 秒。原修法（把 fuse 值做成可注入参数）正是这么做的，只是触发它的是第 14 条的改动。
-### [ ] 30. 补两个缺失的并发测试
+### [x] 30. 补两个缺失的并发测试 — 已完成
 
 - **位置**：`AuthClientTest.kt`
 - **问题**：第 9 条（signOut vs 在途 refresh）和第 10 条（单飞失败共享）都没有测试覆盖，修完必须锁住。
 - **修法**：各补一个——前者用可控延迟的 MockEngine 在请求在飞时调 `signOut`，断言最终态是 `SignedOut` 且存储为空；后者断言 N 个并发调用在服务端失败时只打一次。
 
-### [ ] 32. 删掉 XCFramework 配置
+- **落地**：两条测试已随第 9、10 条一起补上（`在途刷新的响应不得复活刚登出的会话`、`并发刷新失败时也只打一次服务端`），且都做过反向验证。本条只是核对确认。
+### [x] 32. 删掉 XCFramework 配置 — 已完成
 
 - **位置**：`library/build.gradle.kts:12-13` `:35-42`
 - **问题**：XCFramework 是给原生 Swift App 的分发格式。iOS 只做占位的话没人消费它，但它逼着 `publish.yml` 必须跑 macos runner（比 ubuntu 慢且贵，timeout 开到 60 分钟）。
 - **修法**：保留 `iosArm64()` / `iosSimulatorArm64()` 两个 target（这才是「防止 common 代码写死 JVM API」的实际作用），删掉 `XCFramework` / `isStatic` / `binaryOption` 那段。
 
+- **落地**：删掉 `XCFramework` / `isStatic` / `binaryOption` 与两个 import，留一条注释说明「占位阶段不产出 framework」。跑过 `publishToMavenLocal` 核对：四个产物（common / android / iosarm64 / iossimulatorarm64）都还在，iOS klib 照常发布。
+- **原描述里有一处判断错了**：说 XCFramework「逼着 publish.yml 必须跑 macos runner」——不对，**是 iOS target 本身逼的**（Kotlin/Native 的 iOS 编译只能在 macOS 上做），删掉 XCFramework 并不能让发布回到 ubuntu。这条的实际收益只是「删掉没人消费的产物和一段配置」。
 ### [x] 34. README 会误导使用者以为 iOS 可用 — 已完成
 
 - **位置**：`README.md:5` `:32`
@@ -269,12 +272,15 @@
 - **修法**：明写 iOS target 当前仅为占位/编译保障，不承诺可用。
 - **落地**：开头改成「目标平台：Android」，新增「iOS 是占位」一节，把三条不可用的具体理由摆出来（真机未验证、无 Swift 互操作保障即未标 `@Throws`/Flow 不可消费、CI 不跑 iOS 测试）；用法示例里那行 `// iOS: NSUserDefaultsTokenStore()` 删掉。开发一节补了「改 commonMain 形状后本地跑一次 iOS 编译」的提醒与理由。
 
-### [ ] 35. 注释漂移与三处重复
+### [x] 35. 注释漂移与三处重复 — 已完成
 
 - **位置**：`AuthClientTest.kt:123`；`README.md:50-64` / `AuthClient.kt:36-48` / `AuthClient.kt:216-232`
 - **问题**：测试注释引用的 `REFRESH_TIMEOUT_MS` 常量不存在（实际叫 `LOCK_FUSE_TIMEOUT_MS`）；单飞边界那段论述在 README、类 KDoc、`refresh()` KDoc 里重复了三遍，改一处要同步三处。注释质量本身很高（每个决策都有 why + 事故出处），但密度已经产生维护负担。
 - **修法**：改掉那个常量名；把「设计决策」沉到 `docs/design.md`，代码注释只留一句指针。
 
+- **核对后实际范围比记录的小**：那个不存在的常量名（`REFRESH_TIMEOUT_MS`）在第 14 条那轮已经顺带改掉了。真正还重复的只有「单飞边界 / 跨进程锁」这一段。
+- **落地**：新增 `docs/design.md`（面向维护者：为什么这么设计、否掉了什么），把三处重复的论证**移**过去而不是再抄一份。README 保留消费方要看的边界表格 + 指针；代码 KDoc 保留局部的 why + 指针。`AuthClient.kt` 注释 279 → 262 行。
+- **刻意没做的**：没有把代码注释整体搬空。局部的 why（为什么这个 catch 要 rethrow、为什么这个判断必须在锁外）就该待在代码里，搬走反而更难维护。只搬走了跨文件重复的那部分。
 ### [x] 36. POM 里作者名拼写错误 — 已完成
 
 - **位置**：`library/build.gradle.kts:81`

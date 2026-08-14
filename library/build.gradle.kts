@@ -1,6 +1,4 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
-import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFramework
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -8,9 +6,6 @@ plugins {
     alias(libs.plugins.kotlinSerialization)
     alias(libs.plugins.vanniktech.mavenPublish)
 }
-
-val frameworkName = "LoginbaseKt"
-val xcframework = XCFramework(frameworkName)
 
 kotlin {
     android {
@@ -29,17 +24,11 @@ kotlin {
         }
     }
 
+    // iOS 只作占位（见 README）：保留 target 是为了让 commonMain 在编译期就被约束住，
+    // 不会悄悄写死 JVM API。**不产出 framework/XCFramework**——那是给原生 Swift App 的
+    // 分发格式，占位阶段没人消费，白build 白发。真要面向 Swift 时再加回来。
     iosArm64()
     iosSimulatorArm64()
-
-    targets.withType(KotlinNativeTarget::class.java).configureEach {
-        binaries.framework {
-            baseName = frameworkName
-            isStatic = true
-            binaryOption("bundleId", "wang.harlon.loginbase-kt.LoginbaseKt")
-            xcframework.add(this)
-        }
-    }
 
     sourceSets {
         commonMain.dependencies {

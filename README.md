@@ -69,7 +69,7 @@ AuthClient(baseUrl, store) {
 }
 ```
 
-**为什么只收 engine 不收整个 `HttpClient`**：注入 client 等于让本库最安全敏感的那条请求（`POST /refresh`）跑在一套未知插件上。ktor 的 `Auth` 插件会在 401 回调里递归调 `refresh()`，撞上不可重入的单飞锁而永久挂起；`HttpRequestRetry` 默认就是「5xx 与 IOException 重试 3 次」，单飞辛苦收敛成的 1 次刷新会被悄悄放大成 4 次——服务端若已消费掉那个 refresh token，一轮就撞穿救活护栏。而注入真正值钱的能力（证书固定、代理、抓包）全在 engine 级，交出 engine 就够了。engine 的生命周期仍归你，`AuthClient.close()` 不会关它。
+engine 的生命周期仍归你，`AuthClient.close()` 不会关它。**为什么只收 engine 不收整个 `HttpClient`**（简短版：注入 client 会让 `POST /refresh` 跑在一套未知插件上，ktor 的 `Auth` 会死锁、`HttpRequestRetry` 会把一次刷新放大成四次）见 [`docs/design.md`](docs/design.md) 第 3 节。
 
 ### 单飞 refresh 的边界：每进程一个实例
 
@@ -85,11 +85,7 @@ AuthClient(baseUrl, store) {
 | 进程被杀后重启重试 | ❌ 锁随进程消失（设计如此：走服务端的诚实重试救活，正常消耗 1 格配额） |
 | **多进程**（Android `:remote`、iOS App + Widget/Extension 各建实例） | ❌ 各刷各的，会烧配额 |
 
-有多进程结构时，跨进程互斥需消费方自己保证。**本库刻意不做跨进程锁**——失败代价不对称：没有它最坏是多刷一次，有了它最坏是认证彻底卡死（Supabase 用 Web Locks 做跨标签页锁，换来的正是一串孤儿锁与死锁故障）。业界同形：Auth0 的 `CredentialsManager` 同样只保证实例内串行，文档里明写「不要从多个实例调用续期方法」。
-
-> Ktor 的 `Auth` 插件也内建单飞，但它只协调**装了该插件的那一个 `HttpClient`**。App 通常有多个 client（业务 API、图片、第三方），各刷各的照样烧配额——所以两者是叠加不是替代：可以在自己的 client 上装 `Auth` 插件、`refreshTokens` 回调里调 `authClient.refresh()`，由本库的锁保证全局只刷一次。
->
-> 这样用是安全的——本库只收 engine、`HttpClient` 自建，你那个装了 `Auth` 插件的 client 不会参与本库的 `POST /refresh`，不存在递归调用撞上不可重入锁的问题。
+有多进程结构时，跨进程互斥需消费方自己保证——**本库刻意不做跨进程锁**。这个取舍的理由、以及与 ktor `Auth` 插件怎么叠加使用，见 [`docs/design.md`](docs/design.md) 第 1 节。
 
 ## 状态
 
@@ -145,6 +141,8 @@ AuthClient(baseUrl, store) { localeProvider = { settings.tag } }  // App 内自�
 ```kotlin
 localeProvider = { settings.languageTag ?: Loginbase.appLanguageTag() }
 ```
+
+设计决策与被否掉的方案见 [`docs/design.md`](docs/design.md)；待办清单见 [`docs/todo.md`](docs/todo.md)。
 
 待办见 [issue](https://github.com/HarlonWang/loginbase-kt/issues)：TrendingAI 接入（composite build）、iOS 真机链路验证、首版发布。
 
