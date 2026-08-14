@@ -86,6 +86,7 @@
 - **现状**：`AuthClientTest.kt:280` 只覆盖了「signOut 发生在 refresh **进锁前**」，锁内注释也只讨论了这一种。
 - **修法**：`signOut` 也进锁，或加会话 epoch，`persist` 前校验没被换过。
 - **落地**：三件事——
+  0. （另记）`verifyCode` / `exchangeOtc` 有同源竞态，但本条的修法覆盖不到——它们是**新建**会话，出发时存储本就是空的，没有比对基准。已开 [issue #7](https://github.com/HarlonWang/loginbase-kt/issues/7) 单独跟踪，判断是代价与收益不匹配、暂不做。
   1. 新增 `storeMutex`（只保护本地存储读改写，从不跨 HTTP），`signOut` / `signOutAll` 的清本地操作放进去；
   2. `refresh` 落盘前**重读存储比对**，令牌对不上就丢弃、返回 `NoSession` 且不碰 `authState`；检查与写入在同一把 `storeMutex` 里原子完成；
   3. 401 分支改用 `signedOutUnlessAlready`——见下。
@@ -94,13 +95,6 @@
   - **不用会话 epoch 计数器**：登出后存储为空，「空」本身就是可比对的既有状态，重读比对够用，不必新增计数器。
 - **走场景时发现的额外问题（已一并修）**：`signOut` 的 `DELETE /sessions` 与在途 `POST /refresh` 并发，DELETE 先到服务端时这次刷新会收到 401，401 分支原本无条件 `signedOut(SessionEnded)`，会把 `UserInitiated` 改写掉 → UI 弹「登录已失效」，而用户明明是自己点的登出。改用 `signedOutUnlessAlready`：谁先置的登出态谁的原因算数。
 - **测试**：3 条（复活防护、401 不覆盖原因、无并发时照常落盘）。前两条经过**反向验证**：临时拆掉守卫后确实变红。第一条还兼做死锁哨兵——若有人给 `signOut` 加上 `refreshMutex`，它会直接死锁。
-
-### [ ] 9b. `verifyCode` / `exchangeOtc` 与并发登出的同类竞态（新发现）
-
-- **位置**：`AuthClient.kt` 的 `verifyCode` / `exchangeOtc`
-- **问题**：与第 9 条同源——验证码请求在飞时用户点登出，响应到达后 `persist()` 照样建立会话并置 `SignedIn`。
-- **为什么第 9 条的修法覆盖不了**：重读比对的前提是「出发时有一个令牌可比」。这两个是**新建**会话，出发时存储本来就是空的，没有比对基准。要覆盖只能引入会话代次计数器。
-- **判断**：场景是「用户在输验证码的同时点了登出」，罕见；且结果是「登录成功」而非数据损坏。代价（新增代次计数器 + 贯穿三个方法）与收益不匹配。**先记下不做**，需要时再评估。
 
 ### [x] 10. 单飞只共享「成功」不共享「失败」 — 已完成
 
