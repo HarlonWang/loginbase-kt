@@ -3,20 +3,72 @@ package wang.harlon.loginbase
 import kotlinx.serialization.json.JsonElement
 
 /**
- * 登录态。**只有两态**——「登录中」是 UI 状态、归 App（登录流程由 App 驱动：
- * 输邮箱、等验证码、开浏览器授权，库无从知晓用户走到哪一步）。
+ * 登录态。
+ *
+ * **「登录中」不在这里**——那是 UI 状态、归 App：登录流程由 App 驱动（输邮箱、等验证码、
+ * 开浏览器授权），库无从知晓用户走到哪一步。
+ *
+ * 这里的每一态都对应一个**不同的 UI 处置**，多一态就是多一种要想清楚的情况：
+ *
+ * | 态 | UI 该做什么 |
+ * |---|---|
+ * | [Unknown] | 等 [AuthClient.restore]，别急着跳转 |
+ * | [SignedIn] | 正常用 |
+ * | [RefreshFailed] | **别踢到登录页**——会话还在，多半只是弱网 |
+ * | [SignedOut] | 去登录页；是否提示看 [SignOutReason] |
  */
 sealed interface AuthState {
     /** 尚未从存储恢复（[AuthClient.restore] 之前的初始态） */
     data object Unknown : AuthState
-
-    data object SignedOut : AuthState
 
     /**
      * 有令牌在手。**不带 userId**——库不解析 JWT（见 [AuthClient] 关于时钟偏差的说明），
      * 用户档案由 App 从自己的 `/me` 类端点取。
      */
     data object SignedIn : AuthState
+
+    /**
+     * 令牌还在，但最近一次刷新没打通（网络失败 / 5xx / 响应畸形 / 没存住）。
+     *
+     * **和 [SignedOut] 差得很远**：会话没有被清，服务端也没说它死了，多半只是弱网。
+     * 把这种情况当登出处理，就是把漫游、地铁里的用户踢下线——Logto 时代的原事故。
+     * 下一次刷新成功会自动回到 [SignedIn]。
+     *
+     * 之所以要单独成一态而不是留在 [SignedIn]：调用方光看 [SignedIn] 不知道
+     * 「下一个业务请求很可能 401」，做不了「显示离线角标」「暂缓后台同步」这类决定。
+     * supabase-kt 早期只有 `NetworkError`，后来专门重设计成 `SessionStatus.RefreshFailure`
+     * 也是这个原因。
+     */
+    data class RefreshFailed(val cause: LoginbaseException) : AuthState
+
+    /**
+     * 没有可用会话。[reason] 说明**为什么**——UI 的文案完全取决于它，见 [SignOutReason]。
+     */
+    data class SignedOut(val reason: SignOutReason) : AuthState
+}
+
+/**
+ * 登出的成因。
+ *
+ * 分开是因为**UI 文案不同**：用户自己点的登出弹「登录已失效」是骚扰，
+ * 而被服务端撤销了却一声不吭地跳回登录页，用户会以为是 App 出了 bug。
+ * 光看「已登出」这一个信号，这两件事分不开。
+ */
+sealed interface SignOutReason {
+    /**
+     * 本地压根没有令牌——冷启动时最常见的情形（从没登录过，或上次已登出）。
+     * **不要提示任何东西**。
+     */
+    data object NoSession : SignOutReason
+
+    /** 用户主动登出（[AuthClient.signOut] / [AuthClient.signOutAll]）。同样不必提示。 */
+    data object UserInitiated : SignOutReason
+
+    /**
+     * 服务端明确判定会话已死，被动登出——**这一种才该提示**「登录已失效，请重新登录」。
+     * [reason] 可用来细化文案（如 [RefreshFailure.SESSION_REVOKED] 对应「账号在别处登录」）。
+     */
+    data class SessionEnded(val reason: RefreshFailure) : SignOutReason
 }
 
 /**

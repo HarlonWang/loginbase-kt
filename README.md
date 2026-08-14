@@ -67,7 +67,22 @@ auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新
 
 ## 状态
 
-核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。41 个测试。
+核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。43 个测试。
+
+### 登录态
+
+`authState: StateFlow<AuthState>` 四态，每一态对应一个不同的 UI 处置：
+
+| 态 | UI 该做什么 |
+|---|---|
+| `Unknown` | 等 `restore()`，别急着跳转 |
+| `SignedIn` | 正常用 |
+| `RefreshFailed(cause)` | **别踢到登录页**——会话还在，多半只是弱网；刷成功会自动回到 `SignedIn` |
+| `SignedOut(reason)` | 去登录页；是否提示看 `reason` |
+
+`SignOutReason` 三种，区别只在**文案**：`NoSession`（冷启动没令牌）和 `UserInitiated`（用户自己点的登出）都不该提示任何东西，只有 `SessionEnded(reason)` 才该弹「登录已失效，请重新登录」——它携带的 `RefreshFailure` 可用来细化文案。
+
+把这三种混成一个「已登出」信号的后果：用户自己点登出却被弹「登录已失效」（骚扰），或者会话被服务端撤销了却一声不吭跳回登录页（用户以为 App 有 bug）。
 
 ### 错误处理
 

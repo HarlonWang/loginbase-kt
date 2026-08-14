@@ -129,7 +129,8 @@ class AuthClient(
 
     /** 从存储恢复登录态。App 启动时调一次，之后 [authState] 才有意义。 */
     suspend fun restore(): AuthState {
-        val state = if (tokenStore.load() != null) AuthState.SignedIn else AuthState.SignedOut
+        val state = if (tokenStore.load() != null) AuthState.SignedIn
+        else AuthState.SignedOut(SignOutReason.NoSession)
         _authState.value = state
         return state
     }
@@ -254,14 +255,17 @@ class AuthClient(
      * 它刻意宽松——职责是「别让锁永远握着」，不是替消费方决定超时值。
      */
     suspend fun refresh(): RefreshOutcome {
-        val before = tokenStore.load() ?: return RefreshOutcome.NoSession.also { signedOut() }
+        val before = tokenStore.load()
+            ?: return RefreshOutcome.NoSession
+                .also { signedOutUnlessAlready(SignOutReason.NoSession) }
 
         return refreshMutex.withLock {
             val current = tokenStore.load() ?: run {
                 // 等锁期间会话没了（并发 signOut，或别人刷到 401 清了会话）。
                 // 那些路径本身都已置过 SignedOut，这里再置一次是幂等的防御——
                 // 与锁外的早返回分支对称，不依赖「别人一定记得置」这个不变式。
-                signedOut()
+                // 用 UnlessAlready：别人写下的原因比这里的 NoSession 精确得多。
+                signedOutUnlessAlready(SignOutReason.NoSession)
                 return@withLock RefreshOutcome.NoSession
             }
             if (current.refreshToken != before.refreshToken) {
@@ -279,7 +283,7 @@ class AuthClient(
                 throw e
             } catch (e: Exception) {
                 // 传输层失败（含超时）：会话可能好好的，**绝不清**
-                return@withLock RefreshOutcome.Failed(LoginbaseException.Network(e))
+                return@withLock refreshFailed(LoginbaseException.Network(e))
             }
 
             if (response.status.value == 401) {
@@ -287,22 +291,23 @@ class AuthClient(
                 val reason = RefreshFailure.fromWire(
                     body?.get("reason")?.jsonPrimitive?.content.orEmpty()
                 )
-                // 唯一允许清会话的分支：服务端明确说这个 refresh token 不存在了
+                // 唯一允许清会话的分支：服务端明确说这个 refresh token 不存在了。
+                // 原因要带上：这是全库唯一会让 UI 弹「登录已失效」的路径
                 tokenStore.clear()
-                signedOut()
+                signedOut(SignOutReason.SessionEnded(reason))
                 return@withLock RefreshOutcome.SessionEnded(reason)
             }
             if (!response.status.isSuccess()) {
                 // 5xx / 其他：可能是暂时的，保留会话让调用方重试
-                return@withLock RefreshOutcome.Failed(
+                return@withLock refreshFailed(
                     LoginbaseException.Api(response.status.value, AuthError.INTERNAL)
                 )
             }
 
             val body = response.parseJsonOrNull()
-                ?: return@withLock RefreshOutcome.Failed(LoginbaseException.MalformedResponse("body"))
+                ?: return@withLock refreshFailed(LoginbaseException.MalformedResponse("body"))
             val tokens = body.toTokenPair()
-                ?: return@withLock RefreshOutcome.Failed(
+                ?: return@withLock refreshFailed(
                     LoginbaseException.MalformedResponse("accessToken/refreshToken")
                 )
 
@@ -314,7 +319,7 @@ class AuthClient(
                 // 与上面的传输层分支同规矩：取消如实传播，不吞成 Failed
                 throw e
             } catch (e: Exception) {
-                return@withLock RefreshOutcome.Failed(LoginbaseException.Storage(e))
+                return@withLock refreshFailed(LoginbaseException.Storage(e))
             }
             RefreshOutcome.Success(tokens)
         }
@@ -333,7 +338,7 @@ class AuthClient(
             runCatching { http.delete("$base/sessions") { header(HttpHeaders.Authorization, "Bearer $token") } }
         }
         tokenStore.clear()
-        signedOut()
+        signedOut(SignOutReason.UserInitiated)
     }
 
     /** 登出该用户全部会话：`DELETE /sessions/all` + 清本地。同样尽力而为。 */
@@ -343,7 +348,7 @@ class AuthClient(
             runCatching { http.delete("$base/sessions/all") { header(HttpHeaders.Authorization, "Bearer $token") } }
         }
         tokenStore.clear()
-        signedOut()
+        signedOut(SignOutReason.UserInitiated)
     }
 
     // ---- 内部 ----
@@ -353,8 +358,36 @@ class AuthClient(
         _authState.value = AuthState.SignedIn
     }
 
-    private fun signedOut() {
-        _authState.value = AuthState.SignedOut
+    private fun signedOut(reason: SignOutReason) {
+        _authState.value = AuthState.SignedOut(reason)
+    }
+
+    /**
+     * 幂等防御路径专用：已经是登出态就**不覆盖**。
+     *
+     * 别处可能已经写下了更精确的原因。最要命的一条：会话被服务端撤销后置了
+     * [SignOutReason.SessionEnded]，另一个在等锁的 refresh 醒来发现存储空了，
+     * 若无条件改写成 [SignOutReason.NoSession]，UI 就再也弹不出「登录已失效」，
+     * 用户只会莫名其妙被扔回登录页。
+     */
+    private fun signedOutUnlessAlready(reason: SignOutReason) {
+        if (_authState.value !is AuthState.SignedOut) signedOut(reason)
+    }
+
+    /**
+     * 刷新失败：置 [AuthState.RefreshFailed] 并返回对应的 outcome。
+     *
+     * 会话**没被清**，所以不是登出——这一态存在的意义就是让 UI 能区分「还登着但刷不动」
+     * 和「真登出了」，别把弱网用户踢到登录页。
+     *
+     * 登出态优先：并发 [signOut] 已经把人登出了，不该被一个迟到的刷新失败改回
+     * 「还登着、只是没刷成」。
+     */
+    private fun refreshFailed(cause: LoginbaseException): RefreshOutcome.Failed {
+        if (_authState.value !is AuthState.SignedOut) {
+            _authState.value = AuthState.RefreshFailed(cause)
+        }
+        return RefreshOutcome.Failed(cause)
     }
 
     /**

@@ -2,7 +2,7 @@
 
 > 来源：2026-08-14 全仓代码审查（架构 / 复杂度 / 可维护性 / 接入体验四个维度，对照 supabase-kt、Auth0、Kotlin 官方库指南）。
 >
-> **范围约定**：iOS 长期只做占位，不承诺可用，故 iOS 侧的 Swift 互操作、`NSUserDefaultsTokenStore`、`PlatformLocale.ios.kt` 的功能性问题一律不计；`explicitApi()` 视为风格选择，不作为建议项。
+> **范围约定**：iOS 长期只做占位，不承诺可用，故 iOS 侧的 Swift 互操作、`NSUserDefaultsTokenStore`、`PlatformLocale.ios.kt` 的功能性问题一律不计。`explicitApi()` 的取舍见第 37 条（已决定不开，代价与缓解手段记录在案）。
 >
 > 共 37 条。P0 是「只有发 1.0 前这一个窗口」的破坏性变更，优先级高于 P1 的正确性 bug。
 
@@ -64,13 +64,16 @@
 - **命名偏差**：待办里举的例子是 `systemLanguageTag()`，实际用了 `appLanguageTag()`——原 KDoc 明确写的是「这个 App 显示给用户的语言」而非系统首选语言（Android 的 `Locale.getDefault()` 已跟随 per-app language，iOS 取的是 `preferredLocalizations`），叫 system 名不副实。
 - **顺带**：`Loginbase` object 也给后续不需要实例的库级工具留了位置（如第 26 条的 `parseCallback(uri)`）。
 
-### [ ] 8. `AuthState` 只有 3 态，缺「刷新失败但会话还在」
+### [x] 8. `AuthState` 只有 3 态，缺「刷新失败但会话还在」
 
 - **位置**：`library/src/commonMain/kotlin/wang/harlon/loginbase/AuthModels.kt:9-20`
 - **问题**：`RefreshOutcome.Failed` 时 `authState` 仍是 `SignedIn`，UI 无从知道「令牌可能已过期、下个请求会 401」。另外 `SignedOut` 不区分「用户主动登出」和「会话被撤销」，走 `authState` 这条链路时信息永久丢失，UI 弹不出「登录已失效」。
 - **参照**：supabase-kt 为此专门把早期的 `SessionStatus.NetworkError` 重设计成 `RefreshFailure`，并用 `NotAuthenticated(isSignOut: Boolean)` 区分来源。
 - **修法**：补 `RefreshFailure` 态；`SignedOut` 加 `isUserInitiated` 或拆两态。
 - **为什么是 P0**：往公开 sealed interface 加子类型会让消费方已有的穷尽 `when` 编译失败，属破坏性变更。
+- **落地**：`AuthState` 从三态变四态——新增 `RefreshFailed(cause)`；`SignedOut` 从 `data object` 变 `data class SignedOut(reason: SignOutReason)`，`SignOutReason` 是 sealed（`NoSession` / `UserInitiated` / `SessionEnded(RefreshFailure)`）。
+- **比原修法多做的一点（不是 `isUserInitiated` 布尔）**：`SessionEnded` 需要携带 `RefreshFailure` 才能细化 UI 文案（`SESSION_REVOKED` 对应「账号在别处登录」），布尔装不下。
+- **实现时发现的一个坑**：`refresh()` 里有条幂等防御路径会无条件置登出态。会话被撤销后置了 `SessionEnded`，另一个在等锁的 refresh 醒来发现存储空了，会把它改写成 `NoSession`——UI 就再也弹不出「登录已失效」。故新增 `signedOutUnlessAlready()`：已经是登出态就不覆盖。`refreshFailed()` 同理，登出态优先，不被迟到的刷新失败改回「还登着」。两条都有测试锁住。
 
 ---
 

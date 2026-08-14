@@ -103,7 +103,12 @@ class AuthClientTest {
         assertIs<RefreshOutcome.SessionEnded>(outcome)
         assertEquals(RefreshFailure.SESSION_REVOKED, outcome.reason)
         assertNull(store.load(), "会话已死，本地令牌应清除")
-        assertEquals(AuthState.SignedOut, client.authState.value)
+        // 原因必须是 SessionEnded 而非 NoSession——这是全库唯一让 UI 弹「登录已失效」的路径
+        val state = assertIs<AuthState.SignedOut>(client.authState.value)
+        assertEquals(
+            SignOutReason.SessionEnded(RefreshFailure.SESSION_REVOKED),
+            state.reason,
+        )
     }
 
     @Test
@@ -116,6 +121,51 @@ class AuthClientTest {
         assertNotNull(store.load(), "暂时性失败绝不能清会话")
         val cause = assertIs<LoginbaseException.Network>(outcome.cause)
         assertEquals("network down", cause.cause?.message, "原始异常要留在 cause 里")
+        // 状态是 RefreshFailed 而不是 SignedOut：会话还在，UI 不该把弱网用户踢到登录页
+        assertEquals(AuthState.RefreshFailed(cause), client.authState.value)
+    }
+
+    @Test
+    fun `刷新失败置 RefreshFailed，下次刷成功自动回到 SignedIn`() = runTest {
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        var down = true
+        val (client, _) = clientWith(store) {
+            if (down) throw RuntimeException("offline")
+            respond("""{"accessToken":"a1","refreshToken":"r1"}""", HttpStatusCode.OK, jsonHeaders())
+        }
+        client.restore()
+        assertEquals(AuthState.SignedIn, client.authState.value)
+
+        client.refresh()
+        assertIs<AuthState.RefreshFailed>(client.authState.value)
+
+        down = false
+        assertIs<RefreshOutcome.Success>(client.refresh())
+        assertEquals(AuthState.SignedIn, client.authState.value, "刷成功就该自己恢复")
+    }
+
+    @Test
+    fun `会话被撤销后，迟到的刷新失败不能把原因盖掉`() = runTest {
+        // 幂等防御路径的坑：SessionEnded 若被改写成 NoSession 或 RefreshFailed，
+        // UI 就再也弹不出「登录已失效」，用户只会莫名其妙被扔回登录页
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        val (client, _) = clientWith(store) {
+            respond(
+                """{"error":"invalid_refresh_token","reason":"session_revoked"}""",
+                HttpStatusCode.Unauthorized,
+                jsonHeaders(),
+            )
+        }
+        assertIs<RefreshOutcome.SessionEnded>(client.refresh())
+
+        // 会话已清，再刷一次走的是「没令牌」早返回分支
+        assertIs<RefreshOutcome.NoSession>(client.refresh())
+        val state = assertIs<AuthState.SignedOut>(client.authState.value)
+        assertEquals(
+            SignOutReason.SessionEnded(RefreshFailure.SESSION_REVOKED),
+            state.reason,
+            "更精确的原因不该被后来的 NoSession 覆盖",
+        )
     }
 
     @Test
@@ -395,7 +445,7 @@ class AuthClientTest {
         store.clear() // 模拟并发 signOut 在 refresh 进锁前清掉了会话
 
         assertIs<RefreshOutcome.NoSession>(client.refresh())
-        assertEquals(AuthState.SignedOut, client.authState.value)
+        assertIs<AuthState.SignedOut>(client.authState.value)
     }
 
     // ---- 登出与恢复 ----
@@ -407,7 +457,11 @@ class AuthClientTest {
 
         client.signOut()
         assertNull(store.load(), "用户点了登出就该立刻是登出的")
-        assertEquals(AuthState.SignedOut, client.authState.value)
+        // 主动登出不该让 UI 弹「登录已失效」——那是骚扰
+        assertEquals(
+            AuthState.SignedOut(SignOutReason.UserInitiated),
+            client.authState.value,
+        )
     }
 
     @Test
@@ -417,7 +471,7 @@ class AuthClientTest {
         assertEquals(AuthState.SignedIn, signedIn.restore())
 
         val signedOut = AuthClient(BASE, InMemoryTokenStore())
-        assertEquals(AuthState.SignedOut, signedOut.restore())
+        assertEquals(AuthState.SignedOut(SignOutReason.NoSession), signedOut.restore())
     }
 
     @Test
