@@ -120,8 +120,12 @@ public class AuthClient(
 
     // provider 返回 null/空/und 一律是「我没意见」→ 回落系统语言；系统也给不出才真的不发。
     // 每次现取不缓存：用户可能刚在 App 里切了语言。
+    //
+    // 只对 provider 的返回值做 usableTag()——[platformLanguageTag] 的契约里已经保证
+    // 「取不到返回 null」，这条保证是给消费方拼回落链用的（`settings.tag ?: platformLanguageTag()`），
+    // 不能挪到这里来，否则那种写法会把 "und" 原样发出去。
     private fun resolveLocale(): String? =
-        localeProvider().usableTag() ?: platformLanguageTag().usableTag()
+        localeProvider().usableTag() ?: platformLanguageTag()
 
     /** `POST /code/verify`，成功即建立会话并落盘。 */
     public suspend fun verifyCode(email: String, code: String): AuthSession =

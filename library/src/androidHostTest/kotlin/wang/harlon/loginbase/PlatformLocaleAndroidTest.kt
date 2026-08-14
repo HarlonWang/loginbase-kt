@@ -10,6 +10,7 @@ import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import java.util.Locale
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -44,7 +45,7 @@ class PlatformLocaleAndroidTest {
         }
         AuthClient("https://api.example.com/auth", InMemoryTokenStore(), HttpClient(engine))
             .sendCode("u@x.com")
-        return Json.parseToJsonElement(body) as JsonObject
+        return Json.parseToJsonElement(body).jsonObject
     }
 
     @Test

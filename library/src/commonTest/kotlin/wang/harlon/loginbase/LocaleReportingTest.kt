@@ -9,7 +9,7 @@ import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -26,7 +26,7 @@ class LocaleReportingTest {
         var body: String = ""
         /** 请求体里的 locale；字段缺席时为 null */
         fun locale(): String? =
-            (Json.parseToJsonElement(body) as JsonObject)["locale"]?.jsonPrimitive?.content
+            Json.parseToJsonElement(body).jsonObject["locale"]?.jsonPrimitive?.content
     }
 
     private fun clientReporting(sent: Sent, localeProvider: (() -> String?)? = null): AuthClient {
