@@ -182,6 +182,24 @@ class AuthClientTest {
         assertIs<IllegalStateException>(cause.cause, "原始异常要留在 cause 里可排查")
     }
 
+    @Test
+    fun `retryAfterSeconds 类型不对时，不许掩盖真正的 API 错误`() = authTest {
+        // 老写法 `body["retryAfterSeconds"]?.jsonPrimitive?.int` 在这里抛
+        // NumberFormatException，而且是在**构造 LoginbaseException.Api 的参数求值期**
+        // 抛出——调用方看到的是数字解析失败，不是「限流了」，真正的错误整个被掩盖。
+        val (client, _) = clientWith(InMemoryTokenStore()) {
+            respond(
+                """{"error":"too_many_requests","retryAfterSeconds":"soon"}""",
+                HttpStatusCode.TooManyRequests,
+                jsonHeaders(),
+            )
+        }
+
+        val e = assertFailsWith<LoginbaseException.Api> { client.sendCode("a@b.com") }
+        assertEquals(AuthError.TOO_MANY_REQUESTS, e.error, "错误码必须照常送达")
+        assertNull(e.retryAfterSeconds, "取不到就是取不到，不该因此炸掉整个错误")
+    }
+
     // ---- 保险丝与取消语义 ----
 
     @Test

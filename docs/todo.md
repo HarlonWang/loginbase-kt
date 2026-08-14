@@ -150,18 +150,21 @@
 ## P2 — 健壮性与一致性（9 条）
 
 - **落地**：README 那段加了 ⚠️ 块，明确「装了 `Auth` 插件的 client 不要注入给 `AuthClient`」并说明死锁成因（`Mutex` 不可重入）。`LoginbaseConfig.httpClient` 的 KDoc 里已有同样的警告。
-### [ ] 16. `.jsonPrimitive.int` 会抛错并掩盖真实的 API 错误
+### [x] 16. `.jsonPrimitive.int` 会抛错并掩盖真实的 API 错误 — 已完成
 
 - **位置**：`AuthClient.kt:139` `:353`（另 `:266` `:346` `:373` `:384` 同类）
 - **问题**：`jsonPrimitive` 在元素非 primitive 时抛 `IllegalStateException`，`.int` 在内容非数字时抛 `NumberFormatException`。`:353` 尤其别扭——它在**构造 `AuthApiException` 的参数求值期**抛出，会把真正的协议错误整个掩盖掉。这与 `:78`「服务端加字段不该炸老客户端」的立场相悖。
 - **修法**：全部改 `intOrNull` / 安全取值。
 
-### [ ] 17. 手工 JSON 解析散落 6 处，没有收口
+- **落地**：随第 17 条一起收口，所有取值走 `intOrNull` / `stringOrNull` / `booleanOrNull`。
+### [x] 17. 手工 JSON 解析散落 6 处，没有收口 — 已完成
 
 - **位置**：`AuthClient.kt:139` `:193` `:266` `:346` `:353` `:373` `:384`
 - **问题**：第 16 条是症状，这是病因。「不引 ContentNegotiation」这个决策成立（依赖最小集是核心红线），但**手工解析 ≠ 不封装**。
 - **修法**：加 20 行内部扩展 `JsonObject.stringOrNull(key)` / `intOrNull(key)` / `boolOrNull(key)`，一次性收口，不增加任何依赖。
 
+- **落地**：新增 `JsonAccess.kt`（三个 `internal` 扩展，零新增依赖）。契约只有一条：**取不到就是 `null`，永不抛异常**——覆盖字段缺失、`JsonNull`（`content` 是字符串 `"null"`，不拦住 `toInt()` 会炸）、类型变成对象/数组、以及内容与类型对不上四种情形。
+- **测试**：`JsonAccessTest` 6 条 + 一条端到端（`retryAfterSeconds` 类型不对时错误码必须照常送达）。做过**反向验证**：把 `intOrNull` 退回 `.toInt()` 后三条精确变红。
 ### [x] 18. `PROTOCOL_VERSION` 用 `const val`，恰好破坏它自己的用途 — 已完成
 
 - **位置**：`Protocol.kt:10`

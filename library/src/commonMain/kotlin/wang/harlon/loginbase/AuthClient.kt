@@ -31,10 +31,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.int
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * loginbase 客户端。协议权威见服务端仓 `docs/protocol.md`；本类实现 [PROTOCOL_VERSION]。
@@ -188,7 +185,7 @@ class AuthClient(
         }
         val body = request("$base/code/send", payload)
         return SendCodeResult(
-            cooldownSeconds = body["cooldownSeconds"]?.jsonPrimitive?.int ?: DEFAULT_COOLDOWN
+            cooldownSeconds = body.intOrNull("cooldownSeconds") ?: DEFAULT_COOLDOWN
         )
     }
 
@@ -249,7 +246,7 @@ class AuthClient(
             payload = mapOf("redirect" to redirect),
             bearer = token,
         )
-        return body["authorizeUrl"]?.jsonPrimitive?.content
+        return body.stringOrNull("authorizeUrl")
             ?: throw LoginbaseException.MalformedResponse("authorizeUrl")
     }
 
@@ -382,7 +379,7 @@ class AuthClient(
         if (response.status.value == 401) {
             val body = response.parseJsonOrNull()
             val reason = RefreshFailure.fromWire(
-                body?.get("reason")?.jsonPrimitive?.content.orEmpty()
+                body?.stringOrNull("reason").orEmpty()
             )
             // 唯一允许清会话的分支：服务端明确说这个 refresh token 不存在了。
             // 原因要带上：这是全库唯一会让 UI 弹「登录已失效」的路径。
@@ -561,15 +558,15 @@ class AuthClient(
         }
         val body = response.parseJsonOrNull()
         if (!response.status.isSuccess()) {
-            val raw = body?.get("error")?.jsonPrimitive?.content.orEmpty()
+            val raw = body?.stringOrNull("error").orEmpty()
             // 响应体不是协议 JSON（网关的 HTML 错误页、空体等）时 raw 为空，
             // 回退成 http_<status> 而不是留个空串——否则异常里没有任何可诊断信息
             val diagnosable = raw.ifEmpty { "http_${response.status.value}" }
             throw LoginbaseException.Api(
                 status = response.status.value,
                 error = AuthError.fromWire(raw),
-                retryAfterSeconds = body?.get("retryAfterSeconds")?.jsonPrimitive?.int,
-                refreshFailure = body?.get("reason")?.jsonPrimitive?.content
+                retryAfterSeconds = body?.intOrNull("retryAfterSeconds"),
+                refreshFailure = body?.stringOrNull("reason")
                     ?.let { RefreshFailure.fromWire(it) },
                 rawError = diagnosable,
             )
@@ -602,8 +599,8 @@ class AuthClient(
     }
 
     private fun JsonObject.toTokenPair(): TokenPair? {
-        val access = this["accessToken"]?.jsonPrimitive?.content
-        val refresh = this["refreshToken"]?.jsonPrimitive?.content
+        val access = stringOrNull("accessToken")
+        val refresh = stringOrNull("refreshToken")
         return if (access.isNullOrEmpty() || refresh.isNullOrEmpty()) null
         else TokenPair(access, refresh)
     }
@@ -613,7 +610,7 @@ class AuthClient(
             ?: throw LoginbaseException.MalformedResponse("accessToken/refreshToken")
         return AuthSession(
             tokens = tokens,
-            isNewUser = this["isNewUser"]?.jsonPrimitive?.booleanOrNull,
+            isNewUser = booleanOrNull("isNewUser"),
             user = this["user"],
         )
     }
