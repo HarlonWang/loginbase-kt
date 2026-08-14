@@ -4,7 +4,7 @@
 >
 > **范围约定**：iOS 长期只做占位，不承诺可用，故 iOS 侧的 Swift 互操作、`NSUserDefaultsTokenStore`、`PlatformLocale.ios.kt` 的功能性问题一律不计。`explicitApi()` 的取舍见第 37 条（已决定不开，代价与缓解手段记录在案）。
 >
-> 共 36 条。P0 是「只有发 1.0 前这一个窗口」的破坏性变更，优先级高于 P1 的正确性 bug。
+> 共 35 条。P0 是「只有发 1.0 前这一个窗口」的破坏性变更，优先级高于 P1 的正确性 bug。
 
 ---
 
@@ -245,12 +245,6 @@
 - **问题**：XCFramework 是给原生 Swift App 的分发格式。iOS 只做占位的话没人消费它，但它逼着 `publish.yml` 必须跑 macos runner（比 ubuntu 慢且贵，timeout 开到 60 分钟）。
 - **修法**：保留 `iosArm64()` / `iosSimulatorArm64()` 两个 target（这才是「防止 common 代码写死 JVM API」的实际作用），删掉 `XCFramework` / `isStatic` / `binaryOption` 那段。
 
-### [ ] 33. iOS 占位 target 在 CI 里从不编译，会静默腐烂
-
-- **位置**：`.github/workflows/build.yml:28`
-- **问题**：`build.yml` 跑在 ubuntu、只跑 `testAndroidHostTest`（编不了 iOS，合理）。于是 iOS 侧的编译错误要等到**打 tag 触发 `publish.yml`（macos runner）** 才暴露——那时 CI 已经在跑发布流程，一个占位 target 编译不过就能让一次正式发布失败。
-- **修法**：在 `publish.yml` 的发布步骤前加一次 `compileKotlinIosSimulatorArm64` 前置检查（快速失败，不污染发布），或单开一个低频的 macos 定时编译 job。
-
 ### [x] 34. README 会误导使用者以为 iOS 可用 — 已完成
 
 - **位置**：`README.md:5` `:32`
@@ -306,7 +300,7 @@
 | 1 | **API 重构**：第 1–8 条 + 第 18、20 条（都改公开面，一起改省得反复破坏） | feature 分支 + PR |
 | 2 | **并发修复**：第 9–15 条 + 第 30 条测试 | feature 分支 + PR |
 | 3 | **清理**：第 16、17、19、21–24 条 | 可直接提交 |
-| 4 | **工程收尾**：第 32–36 条 | 可直接提交 |
+| 4 | **工程收尾**：第 32、34、35、36 条 | 可直接提交 |
 | 5 | **单独排期**：第 25–29 条（架构与协议层，需与服务端仓协同） | 各自 PR |
 
 ---
