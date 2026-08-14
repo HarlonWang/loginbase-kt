@@ -30,16 +30,18 @@ Maven      wang.harlon:loginbase-kt      （Maven Central，本仓 tag 触发 CI
 val auth = AuthClient(
     baseUrl = "https://api.example.com/auth",
     tokenStore = SharedPreferencesTokenStore(context),   // iOS: NSUserDefaultsTokenStore()
-)
+) {
+    httpClient = myKtorClient                            // 可选，见 LoginbaseConfig；不写则库自建
+}
 auth.restore()                                           // 启动时恢复登录态
 
 auth.sendCode("a@b.com")                                 // 邮箱验证码（自动带上 App 显示语言）
 auth.verifyCode("a@b.com", "123456")                     // 成功即落盘
 
-openInBrowser(auth.githubSignInUrl("app://cb"))          // GitHub 登录，回跳带 otc
+openInBrowser(auth.signInUrl(OAuthProvider.GitHub, "app://cb"))   // 社交登录，回跳带 otc
 auth.exchangeOtc(otc)
 
-openInBrowser(auth.githubLinkUrl("app://cb"))            // 已登录用户绑定 GitHub
+openInBrowser(auth.linkUrl(OAuthProvider.GitHub, "app://cb"))     // 已登录用户绑定第二身份
 
 auth.accessToken()                                       // 业务请求带上
 auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新重试
@@ -65,7 +67,39 @@ auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新
 
 ## 状态
 
-核心已实现：`AuthClient`（邮箱验证码 / GitHub OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。34 个测试。
+核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。43 个测试。
+
+### 登录态
+
+`authState: StateFlow<AuthState>` 四态，每一态对应一个不同的 UI 处置：
+
+| 态 | UI 该做什么 |
+|---|---|
+| `Unknown` | 等 `restore()`，别急着跳转 |
+| `SignedIn` | 正常用 |
+| `RefreshFailed(cause)` | **别踢到登录页**——会话还在，多半只是弱网；刷成功会自动回到 `SignedIn` |
+| `SignedOut(reason)` | 去登录页；是否提示看 `reason` |
+
+`SignOutReason` 三种，区别只在**文案**：`NoSession`（冷启动没令牌）和 `UserInitiated`（用户自己点的登出）都不该提示任何东西，只有 `SessionEnded(reason)` 才该弹「登录已失效，请重新登录」——它携带的 `RefreshFailure` 可用来细化文案。
+
+把这三种混成一个「已登出」信号的后果：用户自己点登出却被弹「登录已失效」（骚扰），或者会话被服务端撤销了却一声不吭跳回登录页（用户以为 App 有 bug）。
+
+### 错误处理
+
+本库抛出的一切都挂在 `LoginbaseException` 这个 sealed 根下，**包括传输层失败**——engine 由消费方提供、ktor 只是实现细节，不该逼调用方去 catch `IOException`：
+
+```kotlin
+try {
+    auth.verifyCode(email, code)
+} catch (e: LoginbaseException.Api) {          // 服务端明确拒绝，按 e.error 给用户提示
+} catch (e: LoginbaseException.Network) {      // 没连上，可重试；e.cause 是原始异常
+} catch (e: LoginbaseException.MalformedResponse) {  // 两端对不上，重试无用，报给开发者
+}
+```
+
+`refresh()` 是唯一的例外，它返回 `RefreshOutcome` 而不抛——因为它的三种失败**处置方式不同**（`SessionEnded` 必须引导重新登录、`Failed` 该重试、`NoSession` 压根没会话），sealed 的穷尽 `when` 能逼调用方各自想清楚，而 `catch` 不会。`RefreshOutcome.Failed.cause` 同样是 `LoginbaseException`，两边共用一套词汇。
+
+社交登录的 provider 是 [`OAuthProvider`](library/src/commonMain/kotlin/wang/harlon/loginbase/OAuthProvider.kt)（value class，不是枚举）：服务端启用了哪几个由服务端 App 配置，本库不知道也不校验，所以没列进 `OAuthProvider.GitHub` 这类常量的直接写 `OAuthProvider("google")` 即可，不必等客户端发版。
 
 ### 邮件语言（protocol 1.3.0）
 
@@ -73,12 +107,18 @@ auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新
 
 ```kotlin
 AuthClient(baseUrl, store)                                  // 什么都不写 = 跟随系统语言
-AuthClient(baseUrl, store, localeProvider = { settings.tag })  // App 内自选；返回 null = 没意见 → 回落系统语言
+AuthClient(baseUrl, store) { localeProvider = { settings.tag } }  // App 内自选；返回 null = 没意见 → 回落系统语言
 ```
 
 `null`（以及空串、`und`）只有一个含义——**「我没意见」**，回落系统语言，**不是「不要发」**。想一律某种语言就返回定值，如 `{ "en" }`。服务端对未知语言静默回落，故这条链路**不产生任何新的错误分支**。
 
 平台取值：Android `Locale.getDefault().toLanguageTag()`（已跟随 per-app language）；iOS `Bundle.main.preferredLocalizations.first`（App 实际显示的语言，而非系统首选语言）。两端取不到时字段整个省略，交服务端兜底。
+
+这个取值也单独暴露成 `Loginbase.appLanguageTag()`，方便拼自己的回落链：
+
+```kotlin
+localeProvider = { settings.languageTag ?: Loginbase.appLanguageTag() }
+```
 
 待办见 [issue](https://github.com/HarlonWang/loginbase-kt/issues)：TrendingAI 接入（composite build）、iOS 真机链路验证、首版发布。
 

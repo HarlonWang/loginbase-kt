@@ -43,8 +43,9 @@ class PlatformLocaleAndroidTest {
                 headersOf(HttpHeaders.ContentType, "application/json"),
             )
         }
-        AuthClient("https://api.example.com/auth", InMemoryTokenStore(), HttpClient(engine))
-            .sendCode("u@x.com")
+        AuthClient("https://api.example.com/auth", InMemoryTokenStore()) {
+            httpClient = HttpClient(engine)
+        }.sendCode("u@x.com")
         return Json.parseToJsonElement(body).jsonObject
     }
 
@@ -52,7 +53,7 @@ class PlatformLocaleAndroidTest {
     fun `跟随 Locale getDefault 并给出 BCP 47 形态`() {
         withDefaultLocale(Locale.SIMPLIFIED_CHINESE) {
             // toString() 会给 zh_CN（下划线，非 BCP 47），必须是 toLanguageTag()
-            assertEquals("zh-CN", platformLanguageTag())
+            assertEquals("zh-CN", Loginbase.appLanguageTag())
         }
     }
 
@@ -60,7 +61,7 @@ class PlatformLocaleAndroidTest {
     fun `系统语言取不到时不发 locale 字段（而不是发 und 或 null）`() = runTest {
         withDefaultLocale(Locale.ROOT) {
             // Locale.ROOT.toLanguageTag() == "und"
-            assertNull(platformLanguageTag())
+            assertNull(Loginbase.appLanguageTag())
             val body = sendCodeBody()
             assertFalse("locale" in body, "取不到语言时 locale 字段应整个缺席：$body")
         }

@@ -16,7 +16,7 @@ import kotlinx.coroutines.withContext
  * `androidx.security` 的 EncryptedSharedPreferences 已被 Google 废弃，为此引依赖
  * 不划算；确有需要的 App 自己实现 [TokenStore] 即可。
  */
-public class SharedPreferencesTokenStore(
+class SharedPreferencesTokenStore(
     context: Context,
     fileName: String = "loginbase_tokens",
 ) : TokenStore {

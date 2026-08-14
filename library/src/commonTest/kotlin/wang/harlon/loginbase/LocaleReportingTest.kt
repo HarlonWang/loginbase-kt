@@ -38,11 +38,10 @@ class LocaleReportingTest {
                 headersOf(HttpHeaders.ContentType, "application/json"),
             )
         }
-        val http = HttpClient(engine)
-        return if (localeProvider == null) {
-            AuthClient(BASE_URL, InMemoryTokenStore(), http)
-        } else {
-            AuthClient(BASE_URL, InMemoryTokenStore(), http, localeProvider)
+        return AuthClient(BASE_URL, InMemoryTokenStore()) {
+            httpClient = HttpClient(engine)
+            // 不配 provider 时保持缺省（跟随系统），这正是「两条规则」里的第一条
+            if (localeProvider != null) this.localeProvider = localeProvider
         }
     }
 
@@ -58,25 +57,25 @@ class LocaleReportingTest {
         val sent = Sent()
         clientReporting(sent).sendCode("u@x.com")
         // 平台给不出语言时字段缺席（而非 null 值），两种情形一起断言
-        assertEquals(platformLanguageTag(), sent.locale())
+        assertEquals(Loginbase.appLanguageTag(), sent.locale())
     }
 
     @Test
     fun `provider 返回 null 是「没意见」——回落系统语言而不是关闭上报`() = runTest {
         val sent = Sent()
         clientReporting(sent) { null }.sendCode("u@x.com")
-        assertEquals(platformLanguageTag(), sent.locale())
+        assertEquals(Loginbase.appLanguageTag(), sent.locale())
     }
 
     @Test
     fun `provider 返回空串或 und 同样回落系统语言`() = runTest {
         val blank = Sent()
         clientReporting(blank) { "   " }.sendCode("u@x.com")
-        assertEquals(platformLanguageTag(), blank.locale())
+        assertEquals(Loginbase.appLanguageTag(), blank.locale())
 
         val und = Sent()
         clientReporting(und) { "und" }.sendCode("u@x.com")
-        assertEquals(platformLanguageTag(), und.locale())
+        assertEquals(Loginbase.appLanguageTag(), und.locale())
     }
 
     @Test
@@ -84,6 +83,31 @@ class LocaleReportingTest {
         val sent = Sent()
         clientReporting(sent) { "en" }.sendCode("u@x.com")
         assertEquals("en", sent.locale())
+    }
+
+    @Test
+    fun `配置在构造期就快照，之后再改不影响已建好的 client`() = runTest {
+        // LoginbaseConfig 刻意可变——可变才换来「加选项不破二进制兼容」。代价是调用方
+        // 能把 this 存出去，所以 AuthClient 必须在构造期读成不可变字段
+        val sent = Sent()
+        val engine = MockEngine { request ->
+            sent.body = (request.body as TextContent).text
+            respond(
+                """{"cooldownSeconds":60}""",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+        var escaped: LoginbaseConfig? = null
+        val client = AuthClient(BASE_URL, InMemoryTokenStore()) {
+            httpClient = HttpClient(engine)
+            localeProvider = { "en" }
+            escaped = this
+        }
+
+        escaped!!.localeProvider = { "ja" }
+        client.sendCode("u@x.com")
+        assertEquals("en", sent.locale(), "构造之后改 config 不该改变 client 的行为")
     }
 
     @Test

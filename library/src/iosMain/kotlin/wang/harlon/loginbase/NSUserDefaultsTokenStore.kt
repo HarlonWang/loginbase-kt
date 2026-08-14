@@ -16,7 +16,7 @@ import platform.Foundation.NSUserDefaults
  * 注：TrendingAI 的 iOS 目前只是壳（CI 也不编 iOS），本实现是为 target 完整性
  * 与将来准备，尚未在真机链路上验证过。
  */
-public class NSUserDefaultsTokenStore(
+class NSUserDefaultsTokenStore(
     private val defaults: NSUserDefaults = NSUserDefaults.standardUserDefaults,
     private val keyPrefix: String = "loginbase.",
 ) : TokenStore {

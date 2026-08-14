@@ -7,14 +7,19 @@ package wang.harlon.loginbase
  * 本仓不留副本。分仓后两端版本线独立——客户端有自己的版本号，靠这个常量声明
  * 「我实现的是哪一版协议」，两端版本号不追求相等。
  */
-public const val PROTOCOL_VERSION: String = "1.3.0"
+const val PROTOCOL_VERSION: String = "1.3.0"
 
 /**
  * 协议错误码（`{"error": "..."}` 的取值）。与 protocol.md 的错误码总表一一对应，
  * 契约测试据此断言；[UNKNOWN] 兜住服务端将来新增而客户端尚未认识的码——
  * 客户端不能因为多了一个错误码就崩，未知一律按通用失败处理。
+ *
+ * `wire` 与 `fromWire` 是 `internal`：它们是**解码器**，只有本库解析响应时用得上。
+ * 公开它们等于把服务端的 wire 字符串写进本库的对外契约——服务端换个错误码字符串
+ * 就成了客户端的破坏性变更，而那本该是纯粹的实现细节。消费方要原始串的话，
+ * [LoginbaseException.Api.rawError] 已经给了。
  */
-public enum class AuthError(public val wire: String) {
+enum class AuthError(internal val wire: String) {
     /** code/send：邮箱格式非法 */
     INVALID_EMAIL("invalid_email"),
 
@@ -51,8 +56,8 @@ public enum class AuthError(public val wire: String) {
     /** 服务端返回了本客户端尚未认识的错误码 */
     UNKNOWN("");
 
-    public companion object {
-        public fun fromWire(wire: String): AuthError =
+    internal companion object {
+        internal fun fromWire(wire: String): AuthError =
             entries.firstOrNull { it.wire == wire && it != UNKNOWN } ?: UNKNOWN
     }
 }
@@ -63,8 +68,10 @@ public enum class AuthError(public val wire: String) {
  * 除非实现了与服务端救活机制配合的重试，**均应视为登录态终结、引导重新登录**。
  * 服务端对丢回执（客户端没存住新 token 就断了）有救活判定，所以客户端的
  * 单飞 refresh 纪律很重要——并发刷新会消耗救活配额（1h/3 次护栏）。
+ *
+ * `wire` / `fromWire` 为何是 `internal`：同 [AuthError]。
  */
-public enum class RefreshFailure(public val wire: String) {
+enum class RefreshFailure(internal val wire: String) {
     /** 请求体缺 refreshToken */
     MISSING_TOKEN("missing_token"),
 
@@ -83,8 +90,8 @@ public enum class RefreshFailure(public val wire: String) {
     /** 服务端返回了本客户端尚未认识的归因 */
     UNKNOWN("");
 
-    public companion object {
-        public fun fromWire(wire: String): RefreshFailure =
+    internal companion object {
+        internal fun fromWire(wire: String): RefreshFailure =
             entries.firstOrNull { it.wire == wire && it != UNKNOWN } ?: UNKNOWN
     }
 }

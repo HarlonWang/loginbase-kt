@@ -12,4 +12,4 @@ import java.util.Locale
  *   还会把 `androidx.appcompat` 拖进本库的依赖面（撞依赖最小集红线）；
  * - `Locale.toString()`——给的是 `zh_CN` 这种下划线形式，不是 BCP 47。
  */
-public actual fun platformLanguageTag(): String? = Locale.getDefault().toLanguageTag().usableTag()
+internal actual fun platformLanguageTag(): String? = Locale.getDefault().toLanguageTag().usableTag()

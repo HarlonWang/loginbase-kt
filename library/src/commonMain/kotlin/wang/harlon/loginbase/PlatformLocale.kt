@@ -1,14 +1,15 @@
 package wang.harlon.loginbase
 
 /**
- * 当前**这个 App 显示给用户的语言**，BCP 47 标签（如 `zh-Hans-CN`）；取不到返回 null。
+ * 平台实现，**不对外**——对外的是 [Loginbase.appLanguageTag]。
  *
- * 是 [AuthClient] 的 `localeProvider` 缺省值，也可被消费方复用来拼自己的回落链。
+ * expect/actual 只能是顶层声明（object 成员要写成 `expect object`，得在每个平台
+ * 重复一遍 object 本身），所以这里保留顶层形态但降 `internal`，由 [Loginbase]
+ * 转发一层。这样公开面上就只有一个 object 成员，将来演进不受顶层函数的束缚。
  *
- * 取的是「App 显示语言」而非「系统首选语言」：这件事的起点就是 App UI 与验证码邮件
- * 语言割裂（App 英文、邮件中文），对齐用户眼睛看到的那个语言才有意义。
+ * 契约：取不到返回 `null`（已过 [usableTag]），消费方可据此拼回落链。
  */
-public expect fun platformLanguageTag(): String?
+internal expect fun platformLanguageTag(): String?
 
 /**
  * 空白与 `und`（BCP 47 的「未确定语言」）一律视为「没有语言信息」。

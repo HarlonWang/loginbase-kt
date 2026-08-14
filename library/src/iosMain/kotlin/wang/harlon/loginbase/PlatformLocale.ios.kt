@@ -12,5 +12,5 @@ import platform.Foundation.NSBundle
  *
  * bundle 没有任何本地化时会是空列表，此时返回 null 交给服务端兜底。
  */
-public actual fun platformLanguageTag(): String? =
+internal actual fun platformLanguageTag(): String? =
     (NSBundle.mainBundle.preferredLocalizations.firstOrNull() as? String).usableTag()
