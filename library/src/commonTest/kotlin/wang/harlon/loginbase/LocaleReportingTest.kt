@@ -57,25 +57,25 @@ class LocaleReportingTest {
         val sent = Sent()
         clientReporting(sent).sendCode("u@x.com")
         // 平台给不出语言时字段缺席（而非 null 值），两种情形一起断言
-        assertEquals(platformLanguageTag(), sent.locale())
+        assertEquals(Loginbase.appLanguageTag(), sent.locale())
     }
 
     @Test
     fun `provider 返回 null 是「没意见」——回落系统语言而不是关闭上报`() = runTest {
         val sent = Sent()
         clientReporting(sent) { null }.sendCode("u@x.com")
-        assertEquals(platformLanguageTag(), sent.locale())
+        assertEquals(Loginbase.appLanguageTag(), sent.locale())
     }
 
     @Test
     fun `provider 返回空串或 und 同样回落系统语言`() = runTest {
         val blank = Sent()
         clientReporting(blank) { "   " }.sendCode("u@x.com")
-        assertEquals(platformLanguageTag(), blank.locale())
+        assertEquals(Loginbase.appLanguageTag(), blank.locale())
 
         val und = Sent()
         clientReporting(und) { "und" }.sendCode("u@x.com")
-        assertEquals(platformLanguageTag(), und.locale())
+        assertEquals(Loginbase.appLanguageTag(), und.locale())
     }
 
     @Test

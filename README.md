@@ -99,6 +99,12 @@ AuthClient(baseUrl, store) { localeProvider = { settings.tag } }  // App 内自�
 
 平台取值：Android `Locale.getDefault().toLanguageTag()`（已跟随 per-app language）；iOS `Bundle.main.preferredLocalizations.first`（App 实际显示的语言，而非系统首选语言）。两端取不到时字段整个省略，交服务端兜底。
 
+这个取值也单独暴露成 `Loginbase.appLanguageTag()`，方便拼自己的回落链：
+
+```kotlin
+localeProvider = { settings.languageTag ?: Loginbase.appLanguageTag() }
+```
+
 待办见 [issue](https://github.com/HarlonWang/loginbase-kt/issues)：TrendingAI 接入（composite build）、iOS 真机链路验证、首版发布。
 
 ## 设计红线

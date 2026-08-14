@@ -55,11 +55,14 @@
 - **修法**：降 `internal`。
 - **落地**：已降。`LoginbaseException.Api.rawError` 的默认值 `= error.wire` 引用了 internal 属性，编译无碍（默认参数不受公开 API 可见性约束，那条限制只针对 inline 函数）。
 
-### [ ] 7. `platformLanguageTag()` 是顶层 public expect 函数，锁死太早
+### [x] 7. `platformLanguageTag()` 是顶层 public expect 函数，锁死太早 — 已完成
 
 - **位置**：`library/src/commonMain/kotlin/wang/harlon/loginbase/PlatformLocale.kt:11`
 - **问题**：公开它的用例是真实的（README 那条 `settings.tag ?: platformLanguageTag()` 回落链），但作为**顶层 expect 函数**一旦发版就固定了：将来想加参数、想换成 `LocaleProvider` 接口都是破坏性变更，而且它占了包的顶层命名空间。
 - **修法**：挪进 object，如 `Loginbase.systemLanguageTag()`。
+- **落地**：新增 `Loginbase` object，对外只有 `Loginbase.appLanguageTag()`；`platformLanguageTag()` 保留顶层形态但降 `internal`，由 object 转发一层。**expect/actual 不能直接做 object 成员**（那要写成 `expect object`，得在每个平台重复 object 本身），所以是转发而不是搬家。
+- **命名偏差**：待办里举的例子是 `systemLanguageTag()`，实际用了 `appLanguageTag()`——原 KDoc 明确写的是「这个 App 显示给用户的语言」而非系统首选语言（Android 的 `Locale.getDefault()` 已跟随 per-app language，iOS 取的是 `preferredLocalizations`），叫 system 名不副实。
+- **顺带**：`Loginbase` object 也给后续不需要实例的库级工具留了位置（如第 26 条的 `parseCallback(uri)`）。
 
 ### [ ] 8. `AuthState` 只有 3 态，缺「刷新失败但会话还在」
 

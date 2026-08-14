@@ -41,5 +41,5 @@ class LoginbaseConfig internal constructor() {
      * App 内有自己的语言设置时设它，**返回 `null` 表示「我没意见」→ 回落系统语言**，
      * 不是「不要发」。想一律某种语言就返回定值，如 `{ "en" }`。
      */
-    var localeProvider: () -> String? = ::platformLanguageTag
+    var localeProvider: () -> String? = Loginbase::appLanguageTag
 }
