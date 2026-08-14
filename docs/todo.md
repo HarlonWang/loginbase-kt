@@ -172,12 +172,13 @@
 - **修法**：去掉 `const`，改普通 `val`。
 - **落地**：已改，并在 KDoc 里写明为什么不能是 `const`——否则后人很容易「顺手优化」回去。
 
-### [ ] 19. `InMemoryTokenStore` 公开、非线程安全、却写着「生产可用」
+### [x] 19. `InMemoryTokenStore` 公开、非线程安全、却写着「生产可用」 — 已完成
 
 - **位置**：`library/src/commonMain/kotlin/wang/harlon/loginbase/TokenStore.kt:38-53`
 - **问题**：`private var tokens` 无任何同步，类注释却写「用于测试，**以及「本次启动内有效即可」的场景**」——后半句是在说生产可用。而 `AuthClient` 文档反复强调「多协程并发调 refresh」，两件事凑一起就是数据竞争。
 - **修法**：加 Mutex，或删掉「生产可用」措辞、明确它只是测试替身。
 
+- **落地**：加了 `Mutex`，文档措辞改成「测试替身，生产别用」。加锁不是形式主义——它会被并发测试直接使用，而 `AuthClient` 的整个并发模型建立在「多协程同时 refresh」之上。
 ### [x] 20. `AuthApiException(200, ...)` 混淆「服务端说不行」与「响应体畸形」 — 已完成（随第 2 条）
 
 - **位置**：`AuthClient.kt:194` `:381`
@@ -185,25 +186,29 @@
 - **修法**：单列一个 `LoginbaseException.MalformedResponse(field)`（挂在第 2 条的根类型下）。
 - **为什么提前做**：`LoginbaseException` 是 sealed，晚一步加子类型就是又一次破坏性变更（同第 8 条的道理）。顺带把 `refresh()` 里两处 `IllegalStateException("empty refresh response")` 也归了进来。
 
-### [ ] 21. 忘记调 `restore()` 会让 `authState` 与实际行为不同步
+### [x] 21. 忘记调 `restore()` 会让 `authState` 与实际行为不同步 — 已完成
 
 - **位置**：`AuthClient.kt:116` 对 `:205` `:212`
 - **问题**：`accessToken()` 直接读存储，与 `authState` 无关。所以没调 `restore()` 时，`authState` 是 `Unknown` 而 `accessToken()` 已经能返回有效令牌——两个对外信号互相矛盾，且没有任何机制提醒调用方漏了这一步。
 - **修法**：要么 `restore()` 在首次 `accessToken()` / `refresh()` 时惰性自动执行，要么在 `Unknown` 态下让读取路径先补一次恢复。
 
-### [ ] 22. 自建的 `HttpClient` 没有关闭出口
+- **落地**：选了「读取路径顺手补齐」而不是惰性自动 restore——`accessToken` 与 `refresh` 反正都要读一次存储，顺手把还停在 `Unknown` 的状态补上，零额外 IO。
+- **只在 `Unknown` 时动手**：别的状态都是别处根据更完整的信息写下的（比如 `SignedOut(UserInitiated)`），不该被这条逻辑覆盖。有测试守着。
+### [x] 22. 自建的 `HttpClient` 没有关闭出口 — 已完成
 
 - **位置**：`AuthClient.kt:92-107`
 - **问题**：默认路径下库自己 `HttpClient { }`，但 `AuthClient` 没有 `close()`，这个 client 及其 engine 随进程存活。单例定位下影响有限，但测试和 DI 重建场景会积累。
 - **修法**：加 `close()`（只关自建的，不碰注入的），或在类文档里明说不需要关闭及其理由。
 
-### [ ] 23. 私有 `isSuccess()` 与 ktor 内建重复
+- **落地**：加了 `close()`，只关**库自建**的 client；注入的归消费方所有，碰都不碰（对方可能还用同一个 engine 发业务请求）。自建是惰性的，没走过 HTTP 的实例不会因此白建一个。KDoc 里写明单例场景通常一辈子用不到它，它是给测试和 DI 图重建准备的。
+### [x] 23. 私有 `isSuccess()` 与 ktor 内建重复 — 已完成
 
 - **位置**：`AuthClient.kt:399`
 - **问题**：ktor 已有 `io.ktor.http.isSuccess()`（`HttpStatusCode.kt:195`，实现完全相同 `value in (200 until 300)`）。
 - **修法**：删掉私有版本，改 import。
 
-### [ ] 24. `encodeDefaults = true` 是死配置
+- **落地**：删掉私有版本，改 import ktor 的 `io.ktor.http.isSuccess`。
+### [x] 24. `encodeDefaults = true` 是死配置 — 已完成
 
 - **位置**：`AuthClient.kt:79`
 - **问题**：全程只用 `JsonObject.serializer()` 手工序列化，没有任何带默认值的 `@Serializable` 类，这行不起作用。
@@ -213,6 +218,7 @@
 
 ## P3 — 架构、工程与文档（12 条）
 
+- **落地**：删掉，并补一句注释说明这个 `Json` 实例的职责边界（只做 `JsonObject` 与文本的互转，没有任何 `@Serializable` 类经过它），免得后人再往里加配置。
 ### [ ] 25. 缺 HTTP 集成件，401 重试样板留给每个调用点
 
 - **位置**：新增

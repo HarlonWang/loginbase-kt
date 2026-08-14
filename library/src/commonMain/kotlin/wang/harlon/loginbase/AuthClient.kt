@@ -12,6 +12,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
+import io.ktor.http.isSuccess
 import io.ktor.http.encodeURLParameter
 import io.ktor.http.encodeURLPathPart
 import kotlinx.coroutines.CancellationException
@@ -94,9 +95,10 @@ class AuthClient(
         lockFuseMillis = config.lockFuseMillis
     }
 
+    // 只用来把 JsonObject 序列化成请求体、把响应体解析成 JsonObject——没有任何
+    // @Serializable 类经过它，所以除 ignoreUnknownKeys 外不需要别的配置。
     private val json = Json {
         ignoreUnknownKeys = true // 服务端加字段不该炸老客户端
-        encodeDefaults = true
     }
 
     // 请求体手工序列化、响应手工解析——故不需要 ContentNegotiation 插件：
@@ -118,7 +120,7 @@ class AuthClient(
     //
     // 保险丝改在 [runRound] 里用 `withTimeout` 实现：与消费方的 client 配置完全正交，
     // 既不派生 client，也不依赖对方装了什么插件。
-    private val http: HttpClient by lazy {
+    private val httpDelegate = lazy {
         injectedHttpClient ?: HttpClient {
             install(HttpTimeout) {
                 requestTimeoutMillis = TIMEOUT_MS
@@ -127,6 +129,8 @@ class AuthClient(
             }
         }
     }
+
+    private val http: HttpClient by httpDelegate
 
     /** 刷新互斥：见 [refresh] 对单飞的说明 */
     private val refreshMutex = Mutex()
@@ -255,6 +259,10 @@ class AuthClient(
     /**
      * 取当前 access token。
      *
+     * 忘了调 [restore] 也没关系：本方法反正要读一次存储，顺手把还停在
+     * [AuthState.Unknown] 的状态补齐——否则会出现「[authState] 说 `Unknown`，
+     * 而这里已经能返回有效令牌」这种两个对外信号互相矛盾、又没人提醒的局面。
+     *
      * @param forceRefresh 业务请求收到 401 时传 true——走单飞刷新拿新的再重试一次。
      * @return 无会话或刷新失败时为 null
      */
@@ -265,7 +273,17 @@ class AuthClient(
                 else -> null
             }
         }
-        return tokenStore.load()?.accessToken
+        val tokens = tokenStore.load()
+        syncStateIfUnknown(tokens)
+        return tokens?.accessToken
+    }
+
+    // 状态还停在 Unknown（没调过 restore）时，用手头这次存储读取的结果补齐。
+    // 只在 Unknown 时动手：别的状态都是别处根据更完整的信息写下的，不该被覆盖。
+    private fun syncStateIfUnknown(tokens: TokenPair?) {
+        if (_authState.value != AuthState.Unknown) return
+        _authState.value = if (tokens != null) AuthState.SignedIn
+        else AuthState.SignedOut(SignOutReason.NoSession)
     }
 
     /**
@@ -304,7 +322,9 @@ class AuthClient(
      * 宽松——职责是「别让锁永远握着」，不是替消费方决定超时值。
      */
     suspend fun refresh(): RefreshOutcome {
-        if (tokenStore.load() == null) {
+        val existing = tokenStore.load()
+        syncStateIfUnknown(existing) // 与 accessToken 同一条不变式：读过存储就不再是 Unknown
+        if (existing == null) {
             return RefreshOutcome.NoSession
                 .also { signedOutUnlessAlready(SignOutReason.NoSession) }
         }
@@ -494,6 +514,20 @@ class AuthClient(
         }
     }
 
+    /**
+     * 关闭**库自建**的 [HttpClient]。
+     *
+     * 注入进来的 client 归消费方所有，本方法**不会**碰它——那是它自己 `close()` 的事。
+     * 没走过任何 HTTP 的实例也不会因此白建一个 client（自建是惰性的）。
+     *
+     * 按文档把 [AuthClient] 当每进程一个的单例持有时，通常一辈子都不用调这个；
+     * 它是给测试和 DI 图重建这类会反复创建实例的场景准备的，不调就会攒下 engine
+     * 的线程池。调用之后本实例不应再使用。
+     */
+    fun close() {
+        if (injectedHttpClient == null && httpDelegate.isInitialized()) http.close()
+    }
+
     // ---- 内部 ----
 
     private suspend fun persist(tokens: TokenPair) {
@@ -621,5 +655,3 @@ class AuthClient(
         const val DEFAULT_COOLDOWN = 60
     }
 }
-
-private fun io.ktor.http.HttpStatusCode.isSuccess(): Boolean = value in 200..299

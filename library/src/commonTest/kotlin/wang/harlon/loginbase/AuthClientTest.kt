@@ -8,6 +8,7 @@ import io.ktor.client.engine.mock.MockRequestHandler
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.respondError
 import io.ktor.client.request.HttpResponseData
+import io.ktor.client.request.get
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
@@ -739,6 +740,60 @@ class AuthClientTest {
         assertEquals(
             AuthState.SignedOut(SignOutReason.UserInitiated),
             client.authState.value,
+        )
+    }
+
+    @Test
+    fun `没调 restore 时，accessToken 顺手把状态补齐`() = authTest {
+        // 否则两个对外信号会互相矛盾：authState 说 Unknown，而 accessToken 已经能
+        // 返回有效令牌，且没有任何机制提醒调用方漏了 restore()
+        val signedIn = AuthClient(BASE, InMemoryTokenStore(TokenPair("a0", "r0")))
+        assertEquals(AuthState.Unknown, signedIn.authState.value)
+        assertEquals("a0", signedIn.accessToken())
+        assertEquals(AuthState.SignedIn, signedIn.authState.value)
+
+        val anonymous = AuthClient(BASE, InMemoryTokenStore())
+        assertNull(anonymous.accessToken())
+        assertEquals(
+            AuthState.SignedOut(SignOutReason.NoSession),
+            anonymous.authState.value,
+        )
+    }
+
+    @Test
+    fun `补状态只在 Unknown 时动手，不覆盖别处写下的更准确的原因`() = authTest {
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        val (client, _) = clientWith(store) { respond("", HttpStatusCode.OK) }
+
+        client.signOut()
+        assertEquals(
+            AuthState.SignedOut(SignOutReason.UserInitiated),
+            client.authState.value,
+        )
+
+        client.accessToken() // 读存储，但状态已不是 Unknown
+        assertEquals(
+            AuthState.SignedOut(SignOutReason.UserInitiated),
+            client.authState.value,
+            "主动登出的原因不该被补状态逻辑改写成 NoSession",
+        )
+    }
+
+    @Test
+    fun `close 只关自建的 client，不碰注入的`() = authTest {
+        // 注入的 client 归消费方所有，关掉它等于替对方做主——对方可能还在用同一个
+        // engine 发业务请求
+        val injected = HttpClient(MockEngine { respond("", HttpStatusCode.OK) })
+        val client = AuthClient(BASE, InMemoryTokenStore()) { httpClient = injected }
+
+        client.close()
+
+        // 还能正常用就说明没被关掉
+        assertNull(client.accessToken())
+        assertEquals(
+            HttpStatusCode.OK,
+            injected.get("https://example.com/ping").status,
+            "注入的 client 必须还活着",
         )
     }
 

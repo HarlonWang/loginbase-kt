@@ -1,5 +1,8 @@
 package wang.harlon.loginbase
 
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
 /**
  * 一对令牌。`refreshToken` 是服务端 32 字节 CSPRNG 的 base64url，服务端只存其 SHA-256；
  * `accessToken` 是 HS256 JWT，客户端**不校验签名也不解析**（见 [AuthClient] 关于时钟偏差的说明）。
@@ -35,19 +38,23 @@ interface TokenStore {
 }
 
 /**
- * 进程内实现，不落盘。用于测试，以及「本次启动内有效即可」的场景。
- * 生产别用——进程重启即登出。
+ * 进程内实现，不落盘。**测试替身**——进程重启即登出，生产别用。
+ *
+ * 加了互斥不是形式主义：[AuthClient] 的整个并发模型建立在「多个协程同时调 refresh」
+ * 之上，一个无同步的 `var` 放进去就是数据竞争。既然它会被并发测试直接使用，就得
+ * 真的经得起并发。
  */
 class InMemoryTokenStore(initial: TokenPair? = null) : TokenStore {
+    private val mutex = Mutex()
     private var tokens: TokenPair? = initial
 
-    override suspend fun load(): TokenPair? = tokens
+    override suspend fun load(): TokenPair? = mutex.withLock { tokens }
 
     override suspend fun save(tokens: TokenPair) {
-        this.tokens = tokens
+        mutex.withLock { this.tokens = tokens }
     }
 
     override suspend fun clear() {
-        tokens = null
+        mutex.withLock { tokens = null }
     }
 }
