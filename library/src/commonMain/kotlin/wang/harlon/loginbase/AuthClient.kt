@@ -124,6 +124,21 @@ class AuthClient(
     /** 刷新互斥：见 [refresh] 对单飞的说明 */
     private val refreshMutex = Mutex()
 
+    /**
+     * 存储写入互斥。**与 [refreshMutex] 的分工是这套并发设计的关键**：
+     *
+     * | | 持有期间 | 最坏等待 |
+     * |---|---|---|
+     * | [refreshMutex] | 跨整个 HTTP 往返 | [LOCK_FUSE_TIMEOUT_MS]（45 秒） |
+     * | [storeMutex] | 只有本地存储读+写 | 毫秒级 |
+     *
+     * [signOut] 只碰这一把，所以「用户点了登出就该立刻是登出的」这条纪律不受在途刷新
+     * 影响；若让 signOut 去抢 [refreshMutex]，一个挂住的刷新能把登出卡 45 秒。
+     *
+     * 嵌套顺序固定为 refreshMutex 外、storeMutex 内，无反向获取路径，不会死锁。
+     */
+    private val storeMutex = Mutex()
+
     private val _authState = MutableStateFlow<AuthState>(AuthState.Unknown)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
 
@@ -292,9 +307,15 @@ class AuthClient(
                     body?.get("reason")?.jsonPrimitive?.content.orEmpty()
                 )
                 // 唯一允许清会话的分支：服务端明确说这个 refresh token 不存在了。
-                // 原因要带上：这是全库唯一会让 UI 弹「登录已失效」的路径
-                tokenStore.clear()
-                signedOut(SignOutReason.SessionEnded(reason))
+                // 原因要带上：这是全库唯一会让 UI 弹「登录已失效」的路径。
+                //
+                // 但用 UnlessAlready：并发 signOut 的 DELETE /sessions 可能先到服务端，
+                // 于是这次刷新收到 401——此时用户是**自己点的登出**，改写成 SessionEnded
+                // 会让 UI 弹「登录已失效」，是骚扰。谁先置的登出态谁的原因算数。
+                storeMutex.withLock {
+                    tokenStore.clear()
+                    signedOutUnlessAlready(SignOutReason.SessionEnded(reason))
+                }
                 return@withLock RefreshOutcome.SessionEnded(reason)
             }
             if (!response.status.isSuccess()) {
@@ -313,13 +334,29 @@ class AuthClient(
 
             // 先落盘再宣告成功：没存住就当没刷成功，否则下次拿旧令牌去刷会触发
             // 服务端救活（有护栏）。TokenStore 实现保证 save 返回时已落盘。
-            try {
-                persist(tokens)
+            //
+            // 落盘前**重读存储再比对**：等响应这段时间里，并发 signOut 可能已经把会话
+            // 清了。没有这一步就是「用户点了登出，半秒后又被刚到达的刷新响应复活成登录
+            // 态，手里还是一对服务端刚发的有效令牌」。检查与写入必须在 storeMutex 里原子
+            // 完成——只做检查不加锁的话，窗口从几百毫秒缩到几微秒，但依然是概率性正确。
+            val persisted = try {
+                storeMutex.withLock {
+                    if (tokenStore.load()?.refreshToken != current.refreshToken) {
+                        false // 会话已被清或被换掉，这对令牌属于上一条会话，丢弃
+                    } else {
+                        persist(tokens)
+                        true
+                    }
+                }
             } catch (e: CancellationException) {
                 // 与上面的传输层分支同规矩：取消如实传播，不吞成 Failed
                 throw e
             } catch (e: Exception) {
                 return@withLock refreshFailed(LoginbaseException.Storage(e))
+            }
+            if (!persisted) {
+                // 不碰 authState：清会话那一方已经写下了更准确的原因
+                return@withLock RefreshOutcome.NoSession
             }
             RefreshOutcome.Success(tokens)
         }
@@ -331,14 +368,17 @@ class AuthClient(
      * 服务端调用是**尽力而为**——失败也照清本地并置登出态。理由：用户点了登出就该
      * 立刻是登出的，网络问题不该把人卡在登录态；服务端那条会话最坏留到 refresh
      * token 自然失效或被重用检测清掉。
+     *
+     * **只取 [storeMutex]，绝不取 [refreshMutex]**：后者可能被一个在途刷新占着长达
+     * 45 秒，登出等它就违背了上面那条纪律。与在途刷新的竞态由 [refresh] 落盘前的
+     * 重读比对负责收敛，见那里的说明。
      */
     suspend fun signOut() {
         val token = tokenStore.load()?.accessToken
         if (token != null) {
             runCatching { http.delete("$base/sessions") { header(HttpHeaders.Authorization, "Bearer $token") } }
         }
-        tokenStore.clear()
-        signedOut(SignOutReason.UserInitiated)
+        clearLocally()
     }
 
     /** 登出该用户全部会话：`DELETE /sessions/all` + 清本地。同样尽力而为。 */
@@ -347,8 +387,18 @@ class AuthClient(
         if (token != null) {
             runCatching { http.delete("$base/sessions/all") { header(HttpHeaders.Authorization, "Bearer $token") } }
         }
-        tokenStore.clear()
-        signedOut(SignOutReason.UserInitiated)
+        clearLocally()
+    }
+
+    // 清本地会话。放进 storeMutex 是为了和 refresh 的「重读比对 + 落盘」互斥：
+    // 两个顺序都要给出正确结果——本方法先拿到锁，则刷新随后重读发现会话没了、丢弃令牌；
+    // 刷新先拿到锁，则它落盘后本方法再清掉。缺了这把锁，clear() 会插进「重读」与
+    // 「落盘」之间，退化成原来的复活 bug。
+    private suspend fun clearLocally() {
+        storeMutex.withLock {
+            tokenStore.clear()
+            signedOut(SignOutReason.UserInitiated)
+        }
     }
 
     // ---- 内部 ----

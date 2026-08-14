@@ -2,12 +2,15 @@ package wang.harlon.loginbase
 
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.MockRequestHandler
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.respondError
+import io.ktor.client.request.HttpResponseData
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
@@ -84,6 +87,107 @@ class AuthClientTest {
         // 这和「没连上」的处置完全不同
         val cause = assertIs<LoginbaseException.Storage>(outcome.cause)
         assertIs<IllegalStateException>(cause.cause, "原始异常要留在 cause 里可排查")
+    }
+
+    // ---- 登出与在途刷新的竞态 ----
+
+    /**
+     * 让刷新请求停在「已发出、未返回」的状态，把并发窗口变成确定性的。
+     * `arrived` 在服务端收到刷新请求时完成，`release` 由测试决定何时放行响应。
+     */
+    private class RefreshGate {
+        val arrived = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+    }
+
+    private fun gatedClient(
+        store: TokenStore,
+        gate: RefreshGate,
+        refreshResponse: MockRequestHandleScope.() -> HttpResponseData,
+    ): AuthClient = clientWith(store) { request ->
+        if (request.url.encodedPath.endsWith("/refresh")) {
+            gate.arrived.complete(Unit)
+            gate.release.await()
+            refreshResponse()
+        } else {
+            respond("", HttpStatusCode.OK) // DELETE /sessions
+        }
+    }.first
+
+    @Test
+    fun `在途刷新的响应不得复活刚登出的会话`() = runTest {
+        // 原 bug：refresh 请求在飞 → 用户点登出、存储被清 → 响应到达 → persist 把新
+        // 轮换的令牌写回去并置 SignedIn。用户点了登出，半秒后又登录着，手里还是一对
+        // 服务端刚发的有效令牌。
+        //
+        // 这个测试同时守着另一条纪律：signOut 只取 storeMutex、绝不取 refreshMutex。
+        // 若有人「顺手」给 signOut 加上 refreshMutex，此处会直接死锁——刷新正持着它。
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        val gate = RefreshGate()
+        val client = gatedClient(store, gate) {
+            respond("""{"accessToken":"a1","refreshToken":"r1"}""", HttpStatusCode.OK, jsonHeaders())
+        }
+        client.restore()
+
+        val refreshing = async { client.refresh() }
+        gate.arrived.await() // 刷新请求确实在飞了
+        client.signOut()
+        gate.release.complete(Unit)
+
+        assertIs<RefreshOutcome.NoSession>(refreshing.await())
+        assertNull(store.load(), "登出后绝不能被在途刷新的响应复活")
+        assertEquals(
+            AuthState.SignedOut(SignOutReason.UserInitiated),
+            client.authState.value,
+        )
+    }
+
+    @Test
+    fun `登出与刷新竞争时，401 不得把「主动登出」改写成「登录已失效」`() = runTest {
+        // signOut 的 DELETE /sessions 与在途的 POST /refresh 是并发的。DELETE 先到服务端
+        // 把会话删掉，这次刷新就会收到 401——但用户是**自己点的登出**，把原因改写成
+        // SessionEnded 会让 UI 弹「登录已失效，请重新登录」，是骚扰。
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        val gate = RefreshGate()
+        val client = gatedClient(store, gate) {
+            respond(
+                """{"error":"invalid_refresh_token","reason":"session_not_found"}""",
+                HttpStatusCode.Unauthorized,
+                jsonHeaders(),
+            )
+        }
+        client.restore()
+
+        val refreshing = async { client.refresh() }
+        gate.arrived.await()
+        client.signOut()
+        gate.release.complete(Unit)
+
+        assertIs<RefreshOutcome.SessionEnded>(refreshing.await())
+        assertEquals(
+            AuthState.SignedOut(SignOutReason.UserInitiated),
+            client.authState.value,
+            "谁先置的登出态，谁的原因算数",
+        )
+    }
+
+    @Test
+    fun `没有并发登出时，刷新照常落盘`() = runTest {
+        // 重读比对的反面：会话没被动过就必须正常落盘，别把守卫写成永远丢弃
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        val gate = RefreshGate()
+        val client = gatedClient(store, gate) {
+            respond("""{"accessToken":"a1","refreshToken":"r1"}""", HttpStatusCode.OK, jsonHeaders())
+        }
+        client.restore()
+
+        val refreshing = async { client.refresh() }
+        gate.arrived.await()
+        gate.release.complete(Unit)
+
+        assertIs<RefreshOutcome.Success>(refreshing.await())
+        assertEquals("r1", store.load()?.refreshToken)
+        assertEquals(AuthState.SignedIn, client.authState.value)
     }
 
     // ---- 会话失效判定：只有服务端明说才清 ----
