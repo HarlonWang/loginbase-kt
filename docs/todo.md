@@ -156,11 +156,12 @@
 - **问题**：第 16 条是症状，这是病因。「不引 ContentNegotiation」这个决策成立（依赖最小集是核心红线），但**手工解析 ≠ 不封装**。
 - **修法**：加 20 行内部扩展 `JsonObject.stringOrNull(key)` / `intOrNull(key)` / `boolOrNull(key)`，一次性收口，不增加任何依赖。
 
-### [ ] 18. `PROTOCOL_VERSION` 用 `const val`，恰好破坏它自己的用途
+### [x] 18. `PROTOCOL_VERSION` 用 `const val`，恰好破坏它自己的用途 — 已完成
 
 - **位置**：`Protocol.kt:10`
 - **问题**：`const val` 是编译期常量，**会内联进调用方字节码**。消费方编译时是 1.3.0，之后库升到实现 1.4.0 协议、消费方只换 jar 不重编——读到的还是 `"1.3.0"`。而这个常量存在的唯一理由就是「声明我实现的是哪一版协议」。
 - **修法**：去掉 `const`，改普通 `val`。
+- **落地**：已改，并在 KDoc 里写明为什么不能是 `const`——否则后人很容易「顺手优化」回去。
 
 ### [ ] 19. `InMemoryTokenStore` 公开、非线程安全、却写着「生产可用」
 
@@ -258,11 +259,12 @@
 - **问题**：测试注释引用的 `REFRESH_TIMEOUT_MS` 常量不存在（实际叫 `LOCK_FUSE_TIMEOUT_MS`）；单飞边界那段论述在 README、类 KDoc、`refresh()` KDoc 里重复了三遍，改一处要同步三处。注释质量本身很高（每个决策都有 why + 事故出处），但密度已经产生维护负担。
 - **修法**：改掉那个常量名；把「设计决策」沉到 `docs/design.md`，代码注释只留一句指针。
 
-### [ ] 36. POM 里作者名拼写错误
+### [x] 36. POM 里作者名拼写错误 — 已完成
 
 - **位置**：`library/build.gradle.kts:81`
 - **问题**：`name.set("HarlanWang")`，而 `id` 是 `HarlonWang`、仓库和 URL 也都是 `HarlonWang`。这会进入 Maven Central 的永久元数据。
 - **修法**：改成 `HarlonWang`。
+- **落地**：已改，并跑 `generatePomFileForKotlinMultiplatformPublication` 核对了实际产出的 pom-default.xml。
 
 ---
 

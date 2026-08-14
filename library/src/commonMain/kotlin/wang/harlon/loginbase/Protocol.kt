@@ -6,8 +6,12 @@ package wang.harlon.loginbase
  * 协议的唯一权威是**服务端仓**的 `docs/protocol.md`（https://github.com/HarlonWang/loginbase），
  * 本仓不留副本。分仓后两端版本线独立——客户端有自己的版本号，靠这个常量声明
  * 「我实现的是哪一版协议」，两端版本号不追求相等。
+ *
+ * **刻意不是 `const val`**：`const` 是编译期常量，取值会被**内联进调用方的字节码**。
+ * 消费方升级本库却不重新编译时，读到的仍是编译当时那个版本号——恰好毁掉这个常量
+ * 存在的唯一理由。普通 `val` 走 getter，永远反映实际链接上的那个版本。
  */
-const val PROTOCOL_VERSION: String = "1.3.0"
+val PROTOCOL_VERSION: String = "1.3.0"
 
 /**
  * 协议错误码（`{"error": "..."}` 的取值）。与 protocol.md 的错误码总表一一对应，
