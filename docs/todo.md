@@ -4,7 +4,7 @@
 >
 > **范围约定**：iOS 长期只做占位，不承诺可用，故 iOS 侧的 Swift 互操作、`NSUserDefaultsTokenStore`、`PlatformLocale.ios.kt` 的功能性问题一律不计。`explicitApi()` 的取舍见第 37 条（已决定不开，代价与缓解手段记录在案）。
 >
-> 共 37 条。P0 是「只有发 1.0 前这一个窗口」的破坏性变更，优先级高于 P1 的正确性 bug。
+> 共 36 条。P0 是「只有发 1.0 前这一个窗口」的破坏性变更，优先级高于 P1 的正确性 bug。
 
 ---
 
@@ -239,13 +239,6 @@
 - **问题**：第 9 条（signOut vs 在途 refresh）和第 10 条（单飞失败共享）都没有测试覆盖，修完必须锁住。
 - **修法**：各补一个——前者用可控延迟的 MockEngine 在请求在飞时调 `signOut`，断言最终态是 `SignedOut` 且存储为空；后者断言 N 个并发调用在服务端失败时只打一次。
 
-### [ ] 31. 公开面收窄之后上 binary-compatibility-validator
-
-- **位置**：`library/build.gradle.kts`
-- **问题**：库已配好 Maven Central 发布链路，但没有 API dump，也没有 `apiCheck`。第 1/4/5/6/7/8 条这些收窄如果发版后再做，CI 不会提醒这是破坏性变更。
-- **修法**：**顺序很重要**——先做完 P0 的公开面调整，再 `apiDump` 定基线并接进 CI。
-- **优先级上调**：第 37 条决定不开 `explicitApi()`，「新增声明忘标 `internal` 会静默公开」这个洞就只能靠 BCV 在 CI 里兜。这条从「工程收尾」升为公开面收窄之后的**必做项**。
-
 ### [ ] 32. 删掉 XCFramework 配置
 
 - **位置**：`library/build.gradle.kts:12-13` `:35-42`
@@ -290,7 +283,7 @@
 
 - 今后新增声明**忘写 `internal` 会静默变成公开 API**，编译器不拦——第 5、6 条就是这么来的
 - 读代码时「有意公开」和「忘标 internal」长得一模一样，只能靠 review 兜
-- 缓解手段：第 31 条的 binary-compatibility-validator 能在 CI 里拦住「公开面意外变大」，本质上补的就是这个洞。选了删关键字之后，**第 31 条的优先级应当上调**
+- **这两条风险目前没有任何自动化兜底**：曾考虑用 binary-compatibility-validator 在 CI 里拦「公开面意外变大」，已决定不引入。也就是说公开面的正确性完全依赖 review
 
 > Kotlin 官方库作者指南推荐库开 explicit API mode（[api-guidelines-simplicity](https://kotlinlang.org/docs/api-guidelines-simplicity.html)）。这里是明知推荐而选另一条，理由是代码观感，记录在案便于日后重议。
 
@@ -312,7 +305,7 @@
 | 1 | **API 重构**：第 1–8 条 + 第 18、20 条（都改公开面，一起改省得反复破坏） | feature 分支 + PR |
 | 2 | **并发修复**：第 9–15 条 + 第 30 条测试 | feature 分支 + PR |
 | 3 | **清理**：第 16、17、19、21–24 条 | 可直接提交 |
-| 4 | **工程收尾**：第 31–36 条（第 31 条 BCV 必须排在步骤 1 之后） | 可直接提交 |
+| 4 | **工程收尾**：第 32–36 条 | 可直接提交 |
 | 5 | **单独排期**：第 25–29 条（架构与协议层，需与服务端仓协同） | 各自 PR |
 
 ---
@@ -322,7 +315,7 @@
 - [supabase-kt SessionStatus.kt](https://github.com/supabase-community/supabase-kt/blob/master/Auth/src/commonMain/kotlin/io/github/jan/supabase/auth/status/SessionStatus.kt) — 第 8 条的状态模型参照
 - [supabase-kt CHANGELOG（RefreshFailure 重设计）](https://github.com/supabase-community/supabase-kt/blob/master/CHANGELOG.md)
 - [Auth0.Android CredentialsManager.kt](https://github.com/auth0/Auth0.Android/blob/main/auth0/src/main/java/com/auth0/android/authentication/storage/CredentialsManager.kt) — 第 28 条的 `minTtl` 主动刷新参照
-- [Backward compatibility guidelines for library authors | Kotlin Docs](https://kotlinlang.org/docs/api-guidelines-backward-compatibility.html) — 第 4、31 条
+- [Backward compatibility guidelines for library authors | Kotlin Docs](https://kotlinlang.org/docs/api-guidelines-backward-compatibility.html) — 第 4 条
 - [Building a Kotlin library for multiplatform | Kotlin Docs](https://kotlinlang.org/docs/api-guidelines-build-for-multiplatform.html)
 - [Simplify authentication using Auth Tab | Chrome for Developers](https://developer.chrome.com/docs/android/custom-tabs/guide-auth-tab) — 第 26 条
 - [OAuth for Mobile Apps — Best Practices | Curity](https://curity.io/resources/learn/oauth-for-mobile-apps-best-practices/) — 第 26 条
