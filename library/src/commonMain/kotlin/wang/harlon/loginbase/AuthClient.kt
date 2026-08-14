@@ -14,6 +14,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.encodeURLParameter
+import io.ktor.http.encodeURLPathPart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -83,7 +84,7 @@ public class AuthClient(
     // 少两个 ktor 依赖，且注入的 HttpClient 无需任何插件配置即可工作。
     //
     // 惰性初始化：engine 由消费方提供，无参构造 HttpClient 在 classpath 没有 engine 时
-    // 会直接抛异常。不发 HTTP 的 API（githubSignInUrl 拼串、restore 读存储）不该被这个
+    // 会直接抛异常。不发 HTTP 的 API（signInUrl 拼串、restore 读存储）不该被这个
     // 要求连坐——真正发请求时才需要 engine。
     // 注入的 client 若一个超时都没配，一个挂住的请求会**永久持有单飞锁**，把所有等锁
     // 的调用一起拖死（Supabase 的孤儿锁故障就是这个形态）。故此处补一道保险丝：
@@ -155,17 +156,20 @@ public class AuthClient(
             .toSession()
             .also { persist(it.tokens) }
 
-    // ---- GitHub OAuth ----
+    // ---- 社交登录（OAuth） ----
 
     /**
      * 拼登录用的授权入口，交给**系统浏览器**打开（不要用内置 WebView：OAuth 授权页
-     * 需要用户能看见地址栏，且 GitHub 对嵌入式 WebView 有限制）。
+     * 需要用户能看见地址栏，且各家 provider 对嵌入式 WebView 多有限制，GitHub 尤其）。
      *
-     * 授权完成后 GitHub 回跳到 [redirect]，参数带 `otc`，再调 [exchangeOtc] 换令牌。
+     * 授权完成后 provider 回跳到 [redirect]，参数带 `otc`，再调 [exchangeOtc] 换令牌。
      * 令牌不进 URL——otc 60 秒单次有效，即便被日志记下也只有一次兑换窗口。
+     *
+     * @param provider 见 [OAuthProvider]；服务端启用了哪几个由服务端 App 配置，本库不校验
      */
-    public fun githubSignInUrl(redirect: String): String =
-        "$base/oauth/github/start?redirect=${redirect.encodeURLParameter()}"
+    public fun signInUrl(provider: OAuthProvider, redirect: String): String =
+        "$base/oauth/${provider.id.encodeURLPathPart()}/start" +
+            "?redirect=${redirect.encodeURLParameter()}"
 
     /** `POST /oauth/exchange`：拿 deepLink 回来的 otc 换令牌对，成功即落盘。 */
     public suspend fun exchangeOtc(otc: String): AuthSession =
@@ -174,19 +178,20 @@ public class AuthClient(
             .also { persist(it.tokens) }
 
     /**
-     * `POST /oauth/github/link/start`：**已登录用户**绑定 GitHub 身份，返回授权 URL
+     * `POST /oauth/{provider}/link/start`：**已登录用户**绑定第二身份，返回授权 URL
      * 交给系统浏览器打开。
      *
-     * 与登录流程的区别：绑定不产生新会话、不发令牌，回跳参数是 `linked=github`
+     * 与登录流程的区别：绑定不产生新会话、不发令牌，回跳参数是 `linked=<provider>`
      * 或 `error=<reason>`（冲突时典型为 `already_linked`，具体由服务端 App 定义）。
      *
      * 之所以要先 POST 换 URL 而不能直接开浏览器：这一步需要 Bearer 鉴权，
      * 而浏览器导航带不了 Authorization 头。
      */
-    public suspend fun githubLinkUrl(redirect: String): String {
-        val token = accessToken() ?: throw NotAuthenticatedException("GitHub linking requires an authenticated session")
+    public suspend fun linkUrl(provider: OAuthProvider, redirect: String): String {
+        val token = accessToken()
+            ?: throw NotAuthenticatedException("Linking an OAuth identity requires an authenticated session")
         val body = request(
-            url = "$base/oauth/github/link/start",
+            url = "$base/oauth/${provider.id.encodeURLPathPart()}/link/start",
             payload = mapOf("redirect" to redirect),
             bearer = token,
         )

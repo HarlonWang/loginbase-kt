@@ -36,10 +36,10 @@ auth.restore()                                           // 启动时恢复登�
 auth.sendCode("a@b.com")                                 // 邮箱验证码（自动带上 App 显示语言）
 auth.verifyCode("a@b.com", "123456")                     // 成功即落盘
 
-openInBrowser(auth.githubSignInUrl("app://cb"))          // GitHub 登录，回跳带 otc
+openInBrowser(auth.signInUrl(OAuthProvider.GitHub, "app://cb"))   // 社交登录，回跳带 otc
 auth.exchangeOtc(otc)
 
-openInBrowser(auth.githubLinkUrl("app://cb"))            // 已登录用户绑定 GitHub
+openInBrowser(auth.linkUrl(OAuthProvider.GitHub, "app://cb"))     // 已登录用户绑定第二身份
 
 auth.accessToken()                                       // 业务请求带上
 auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新重试
@@ -65,7 +65,9 @@ auth.accessToken(forceRefresh = true)                    // 收到 401 时刷新
 
 ## 状态
 
-核心已实现：`AuthClient`（邮箱验证码 / GitHub OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。34 个测试。
+核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。36 个测试。
+
+社交登录的 provider 是 [`OAuthProvider`](library/src/commonMain/kotlin/wang/harlon/loginbase/OAuthProvider.kt)（value class，不是枚举）：服务端启用了哪几个由服务端 App 配置，本库不知道也不校验，所以没列进 `OAuthProvider.GitHub` 这类常量的直接写 `OAuthProvider("google")` 即可，不必等客户端发版。
 
 ### 邮件语言（protocol 1.3.0）
 

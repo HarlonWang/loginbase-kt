@@ -228,13 +228,34 @@ class AuthClientTest {
     // ---- OAuth ----
 
     @Test
-    fun `githubSignInUrl 对 deepLink 做 URL 编码`() {
+    fun `signInUrl 对 deepLink 做 URL 编码`() {
         val client = AuthClient(BASE, InMemoryTokenStore())
-        val url = client.githubSignInUrl("cn.trendingai://auth/callback")
+        val url = client.signInUrl(OAuthProvider.GitHub, "cn.trendingai://auth/callback")
         assertEquals(
             "$BASE/oauth/github/start?redirect=cn.trendingai%3A%2F%2Fauth%2Fcallback",
             url,
         )
+    }
+
+    @Test
+    fun `provider 不是枚举——服务端加一个不该逼客户端发版`() {
+        // value class 而非 enum 的意义就在这里：服务端 App 自己配 provider 集合，
+        // 客户端连它启用了哪几个都不知道，写死成枚举等于每次配置变化都 breaking
+        val client = AuthClient(BASE, InMemoryTokenStore())
+        assertEquals(
+            "$BASE/oauth/google/start?redirect=app%3A%2F%2Fcb",
+            client.signInUrl(OAuthProvider("google"), "app://cb"),
+        )
+    }
+
+    @Test
+    fun `provider 被路径编码，越不出自己那一段`() {
+        val client = AuthClient(BASE, InMemoryTokenStore())
+        val url = client.signInUrl(OAuthProvider("../sessions"), "app://cb")
+        assertTrue(url.startsWith("$BASE/oauth/..%2Fsessions/start"), url)
+
+        // 空 provider 是调用方的编程错误，当场炸掉而不是拼出个 //start 打给服务端
+        assertFailsWith<IllegalArgumentException> { OAuthProvider(" ") }
     }
 
     @Test
@@ -248,20 +269,23 @@ class AuthClientTest {
     }
 
     @Test
-    fun `githubLinkUrl 需要已登录，且带 Bearer`() = runTest {
+    fun `linkUrl 需要已登录，且带 Bearer`() = runTest {
         // 未登录直接抛，不白打一次服务端。用专用类型而非 IllegalStateException：
         // UI 状态与实际会话可能短暂不同步，调用方要能单独 catch 它去引导登录
         val anonymous = AuthClient(BASE, InMemoryTokenStore())
-        assertFailsWith<NotAuthenticatedException> { anonymous.githubLinkUrl("app://cb") }
+        assertFailsWith<NotAuthenticatedException> { anonymous.linkUrl(OAuthProvider.GitHub, "app://cb") }
 
         var sawBearer: String? = null
+        var sawUrl: String? = null
         val (client, _) = clientWith(InMemoryTokenStore(TokenPair("a0", "r0"))) { request ->
             sawBearer = request.headers[HttpHeaders.Authorization]
+            sawUrl = request.url.toString()
             respond("""{"authorizeUrl":"https://github.com/login/oauth/authorize?x=1"}""", HttpStatusCode.OK, jsonHeaders())
         }
-        val url = client.githubLinkUrl("app://cb")
+        val url = client.linkUrl(OAuthProvider.GitHub, "app://cb")
         assertEquals("https://github.com/login/oauth/authorize?x=1", url)
         assertEquals("Bearer a0", sawBearer)
+        assertEquals("$BASE/oauth/github/link/start", sawUrl)
     }
 
     @Test

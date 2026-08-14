@@ -10,11 +10,12 @@
 
 ## P0 — 破坏性 API 变更，发版后再改就是 breaking change（8 条）
 
-### [ ] 1. provider 硬编码在方法名里
+### [x] 1. provider 硬编码在方法名里 — 已完成
 
 - **位置**：`library/src/commonMain/kotlin/wang/harlon/loginbase/AuthClient.kt:167` `:186`
 - **问题**：`githubSignInUrl` / `githubLinkUrl` 把 provider 焊死在方法名上，而协议路径本身是 `/oauth/{provider}/start`。加 Google/Apple 就是复制两个方法 + 两段文档。
 - **修法**：改成 `signInUrl(provider: OAuthProvider, redirect: String)` / `linkUrl(provider, redirect)`。`OAuthProvider` 用带 wire 值的枚举或 value class，留 `Custom(String)` 口子，避免服务端加 provider 时客户端非升级不可。
+- **落地**：新增 `OAuthProvider`（value class，非枚举——服务端 provider 集合由服务端 App 配置，枚举等于每次配置变化都 breaking）；两个方法改名并泛化，provider 走 `encodeURLPathPart()` 编码；库未发布，不留 deprecated 兼容壳。
 
 ### [ ] 2. 一个类里两套错误惯例，且异常无根类型
 
