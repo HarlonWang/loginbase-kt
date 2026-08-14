@@ -288,78 +288,91 @@ class AuthClient(
                 return@withLock RefreshOutcome.Success(current)
             }
 
-            val response = try {
-                http.post("$base/refresh") {
-                    contentType(ContentType.Application.Json)
-                    setBody(jsonBody(mapOf("refreshToken" to current.refreshToken)))
-                }
-            } catch (e: CancellationException) {
-                // 调用方主动取消：如实传播，不吞成 Failed（否则破坏结构化并发）
-                throw e
-            } catch (e: Exception) {
-                // 传输层失败（含超时）：会话可能好好的，**绝不清**
-                return@withLock refreshFailed(LoginbaseException.Network(e))
-            }
-
-            if (response.status.value == 401) {
-                val body = response.parseJsonOrNull()
-                val reason = RefreshFailure.fromWire(
-                    body?.get("reason")?.jsonPrimitive?.content.orEmpty()
-                )
-                // 唯一允许清会话的分支：服务端明确说这个 refresh token 不存在了。
-                // 原因要带上：这是全库唯一会让 UI 弹「登录已失效」的路径。
-                //
-                // 但用 UnlessAlready：并发 signOut 的 DELETE /sessions 可能先到服务端，
-                // 于是这次刷新收到 401——此时用户是**自己点的登出**，改写成 SessionEnded
-                // 会让 UI 弹「登录已失效」，是骚扰。谁先置的登出态谁的原因算数。
-                storeMutex.withLock {
-                    tokenStore.clear()
-                    signedOutUnlessAlready(SignOutReason.SessionEnded(reason))
-                }
-                return@withLock RefreshOutcome.SessionEnded(reason)
-            }
-            if (!response.status.isSuccess()) {
-                // 5xx / 其他：可能是暂时的，保留会话让调用方重试
-                return@withLock refreshFailed(
-                    LoginbaseException.Api(response.status.value, AuthError.INTERNAL)
-                )
-            }
-
-            val body = response.parseJsonOrNull()
-                ?: return@withLock refreshFailed(LoginbaseException.MalformedResponse("body"))
-            val tokens = body.toTokenPair()
-                ?: return@withLock refreshFailed(
-                    LoginbaseException.MalformedResponse("accessToken/refreshToken")
-                )
-
-            // 先落盘再宣告成功：没存住就当没刷成功，否则下次拿旧令牌去刷会触发
-            // 服务端救活（有护栏）。TokenStore 实现保证 save 返回时已落盘。
-            //
-            // 落盘前**重读存储再比对**：等响应这段时间里，并发 signOut 可能已经把会话
-            // 清了。没有这一步就是「用户点了登出，半秒后又被刚到达的刷新响应复活成登录
-            // 态，手里还是一对服务端刚发的有效令牌」。检查与写入必须在 storeMutex 里原子
-            // 完成——只做检查不加锁的话，窗口从几百毫秒缩到几微秒，但依然是概率性正确。
-            val persisted = try {
-                storeMutex.withLock {
-                    if (tokenStore.load()?.refreshToken != current.refreshToken) {
-                        false // 会话已被清或被换掉，这对令牌属于上一条会话，丢弃
-                    } else {
-                        persist(tokens)
-                        true
-                    }
-                }
-            } catch (e: CancellationException) {
-                // 与上面的传输层分支同规矩：取消如实传播，不吞成 Failed
-                throw e
-            } catch (e: Exception) {
-                return@withLock refreshFailed(LoginbaseException.Storage(e))
-            }
-            if (!persisted) {
-                // 不碰 authState：清会话那一方已经写下了更准确的原因
-                return@withLock RefreshOutcome.NoSession
-            }
-            RefreshOutcome.Success(tokens)
+            runRound(current)
         }
+    }
+
+    /**
+     * 一次真实的刷新尝试：发请求、判定结果、必要时落盘。
+     *
+     * **假定调用方已持有 [refreshMutex]**，本方法自己不加锁。
+     *
+     * 单独抽出来是为了把「一次尝试做什么」和「谁有资格尝试」分开：前者是一条直线，
+     * 后者是并发编排。所有失败分支都是本方法的 `return`，于是调用处能在唯一一个
+     * 地方处置本轮结果——新增分支在语法上绕不过去。
+     */
+    private suspend fun runRound(current: TokenPair): RefreshOutcome {
+        val response = try {
+            http.post("$base/refresh") {
+                contentType(ContentType.Application.Json)
+                setBody(jsonBody(mapOf("refreshToken" to current.refreshToken)))
+            }
+        } catch (e: CancellationException) {
+            // 调用方主动取消：如实传播，不吞成 Failed（否则破坏结构化并发）
+            throw e
+        } catch (e: Exception) {
+            // 传输层失败（含超时）：会话可能好好的，**绝不清**
+            return refreshFailed(LoginbaseException.Network(e))
+        }
+
+        if (response.status.value == 401) {
+            val body = response.parseJsonOrNull()
+            val reason = RefreshFailure.fromWire(
+                body?.get("reason")?.jsonPrimitive?.content.orEmpty()
+            )
+            // 唯一允许清会话的分支：服务端明确说这个 refresh token 不存在了。
+            // 原因要带上：这是全库唯一会让 UI 弹「登录已失效」的路径。
+            //
+            // 但用 UnlessAlready：并发 signOut 的 DELETE /sessions 可能先到服务端，
+            // 于是这次刷新收到 401——此时用户是**自己点的登出**，改写成 SessionEnded
+            // 会让 UI 弹「登录已失效」，是骚扰。谁先置的登出态谁的原因算数。
+            storeMutex.withLock {
+                tokenStore.clear()
+                signedOutUnlessAlready(SignOutReason.SessionEnded(reason))
+            }
+            return RefreshOutcome.SessionEnded(reason)
+        }
+        if (!response.status.isSuccess()) {
+            // 5xx / 其他：可能是暂时的，保留会话让调用方重试
+            return refreshFailed(
+                LoginbaseException.Api(response.status.value, AuthError.INTERNAL)
+            )
+        }
+
+        val body = response.parseJsonOrNull()
+            ?: return refreshFailed(LoginbaseException.MalformedResponse("body"))
+        val tokens = body.toTokenPair()
+            ?: return refreshFailed(
+                LoginbaseException.MalformedResponse("accessToken/refreshToken")
+            )
+
+        // 先落盘再宣告成功：没存住就当没刷成功，否则下次拿旧令牌去刷会触发
+        // 服务端救活（有护栏）。TokenStore 实现保证 save 返回时已落盘。
+        //
+        // 落盘前**重读存储再比对**：等响应这段时间里，并发 signOut 可能已经把会话
+        // 清了。没有这一步就是「用户点了登出，半秒后又被刚到达的刷新响应复活成登录
+        // 态，手里还是一对服务端刚发的有效令牌」。检查与写入必须在 storeMutex 里原子
+        // 完成——只做检查不加锁的话，窗口从几百毫秒缩到几微秒，但依然是概率性正确。
+        val persisted = try {
+            storeMutex.withLock {
+                if (tokenStore.load()?.refreshToken != current.refreshToken) {
+                    false // 会话已被清或被换掉，这对令牌属于上一条会话，丢弃
+                } else {
+                    persist(tokens)
+                    true
+                }
+            }
+        } catch (e: CancellationException) {
+            // 与上面的传输层分支同规矩：取消如实传播，不吞成 Failed
+            throw e
+        } catch (e: Exception) {
+            return refreshFailed(LoginbaseException.Storage(e))
+        }
+        if (!persisted) {
+            // 不碰 authState：清会话那一方已经写下了更准确的原因
+            return RefreshOutcome.NoSession
+        }
+        return RefreshOutcome.Success(tokens)
     }
 
     /**
