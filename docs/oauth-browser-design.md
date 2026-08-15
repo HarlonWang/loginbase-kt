@@ -374,23 +374,25 @@ Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 | 消费方服务端 | `~/TrendingProjects/github-ai-trending-api` | `src/lib/loginbase.js`、`wrangler.toml` 的 `AUTH_DEEPLINKS` |
 | 本库服务端 | `~/loginbase` | `src/token.ts`、`src/middleware.ts` |
 | 参考实现 | GitHub | AppAuth-Android 的 `RedirectUriReceiverActivity` 与 `library/AndroidManifest.xml`（已逐字核对） |
+| 参考实现 | GitHub | Auth0.Android 的 `AuthenticationActivity.kt`、`RedirectActivity.kt`、`auth0/AndroidManifest.xml`（master @ 2026-08，已逐字核对） |
 
 **TrendingAI 已经手写了本方案的大部分**：中转页、进程级回调总线（`replay = 1`）、
 三态回跳解析。所以 #26 的性质是「把已验证的实现下沉进库并补齐库特有的部分」，
 不是从零设计——但也**不是照抄**：它是 App 层实现，若干选择在库层不成立。
 
-## 八条差异与裁决状态
+## 差异与裁决状态（对照发现八条 + 校准中新发现一条）
 
 | # | 决策点 | 本文原设计 | TrendingAI | AppAuth | 裁决 | 状态 |
 |---|---|---|---|---|---|---|
 | 1 | scheme 怎么传 | `${applicationId}` | placeholder + `buildConfigField` 双喂 | `${appAuthRedirectScheme}` placeholder | **placeholder + `<meta-data>`** | ✅ 已对齐 |
 | 2 | 中转页 launchMode | `singleTask` | `standard` | **无（默认 standard）** | **不写**（standard） | ✅ 已对齐 |
-| 3 | 怎么回到 App | `isTaskRoot` 分支 | `REORDER_TO_FRONT` | 转交管理 Activity → `PendingIntent` | `getLaunchIntentForPackage` + `REORDER_TO_FRONT` | ⬜ 待对齐 |
+| 3 | 怎么回到 App | `isTaskRoot` 分支 | `REORDER_TO_FRONT` | 转交管理 Activity → `PendingIntent` | **库内管理页 + 中转页转发**（AppAuth/Auth0 拓扑，消费方零接线） | ✅ 已对齐 |
 | 4 | redirect 形态 | 带 host | `scheme:/path` 无 host | 不限定 | 无 host（RFC 8252 §7.1 示例形态） | ⬜ 待对齐 |
 | 5 | 结果通道 | 双通道（返回值 + flow） | 单通道（bus） | 单通道（PendingIntent） | **单通道**，且 `signIn()` 可不必挂起 | ⬜ 待对齐 |
 | 6 | 取消检测 | 「做不到」 | ON_RESUME + `hasPending` | `canceledIntent` | **分层**：库拥有启动时是确定信号，纯浏览器兜底才用启发式 | ⬜ 待对齐 |
 | 7 | 幂等 / replay | 记住最后 otc | `resetReplayCache()` | — | **两个机制各司其职**（前者防跨通路重复，后者防陈旧 replay） | ⬜ 待对齐 |
 | 8 | URL 解码 | 未提 | 手写 20 行 percent-decoder | — | 用 ktor 的 `decodeURLQueryComponent()`（既有依赖） | ⬜ 待对齐 |
+| 9 | 浏览器回退链（校准 #3 时新发现） | Auth Tab → 系统浏览器（两极，未论证） | CCT 探测失败落 ACTION_VIEW | CCT 优先 | **Auth Tab → CCT → 系统浏览器** | ✅ 已对齐 |
 
 > 逐条对齐时都要**带一个具体场景**说明校准方案，不要只给结论。
 
@@ -520,3 +522,122 @@ RedirectUriReceiverActivity）——不把 OAuth 的特殊需求写进主 Activi
 TrendingAI 的中转页有、正文草图没有。**采纳。** 场景：冷启动通路（§6.3）里中转页是新
 任务的根，不加的话「最近任务」列表会闪出一个无名的透明条目；它转瞬即逝，不该留痕。
 App 存活的通路里它落在 App 既有任务栈顶、不单独成条目，此属性无副作用。
+
+## 差异 #9 的完整结论（校准 #3 时新发现，作为 #3 的前置）
+
+### 裁决
+
+**回退链 = Auth Tab → Custom Tab → 系统浏览器。** 修订正文 §3 / §5.2 / 分期 2a 的
+「Auth Tab 不可用即系统浏览器」两极表述。
+
+### 为什么
+
+正文从未论证过为什么跳过 CCT 层——盲写期把「外部 user-agent」简化成了两极。而三个
+对照全都在跑含 CCT 的链：AppAuth、Auth0 的主通路就是 CCT（Auth Tab 只是它的 auth
+特化版，同在 androidx.browser，Chrome 137+ 才有）；TrendingAI 的 `openUrl()` 也是
+CCT provider 探测失败才落 ACTION_VIEW。「Auth Tab 不可用」的设备分三类，只有一类
+连 CCT 也没有：
+
+| 设备 | CCT 可用？ | 两极链 vs 三级链 |
+|---|---|---|
+| 旧 Chrome / Firefox / 三星浏览器 | ✅ | 两极链把这批用户降级成整应用切换 |
+| 无 Chrome 的国产机（不实现 CustomTabsService） | 多数 ❌ | 两案等价，都落系统浏览器 |
+| 新 Chrome（137+） | 走 Auth Tab | 不涉及 |
+
+### 场景
+
+三星浏览器用户绑定 GitHub：三级链下授权页以 CCT 形式盖在 App 上，授权完原地回到
+绑定页；两极链下被甩进三星浏览器全屏、来回两次整应用任务切换、最近任务里多一条
+浏览器记录。功能等价、观感差一截，而这批用户在海外 Android 里占比不小。
+
+## 差异 #3 的完整结论（已对齐）
+
+### 裁决
+
+**采用 AppAuth / Auth0 同款的双 Activity 拓扑。撤回表格初裁「`getLaunchIntentForPackage`
++ `REORDER_TO_FRONT`」；正文原案的 `isTaskRoot` + launcher intent 逻辑不废弃，收编进
+管理页的冷启动分支。**
+
+| 部件 | manifest 姿态 | 职责 |
+|---|---|---|
+| 中转页（#2 已裁） | `standard`、`exported="true"`、intent-filter、`excludeFromRecents` | 收回跳 intent，带 `CLEAR_TOP or SINGLE_TOP` 转发给管理页，finish。~15 行，无状态 |
+| **管理页（新增）** | `singleTask`、`exported="false"`、透明主题 | `signIn()/link()` 启动；按 #9 三级链开浏览器；收结果（转发 intent / ActivityResult / onResume 判取消）；决定去向；投递 |
+
+两家参考实现这两个 Activity 的 manifest 姿态**逐字一致**（Auth0 连 `configChanges`
+清单都与 AppAuth 相同），转发 flags 同为 `CLEAR_TOP or SINGLE_TOP` 且只带 `data`。
+照抄已被海量设备验证的组合，不自创。
+
+### 初裁为什么被推翻
+
+`REORDER_TO_FRONT` 是 TrendingAI 给「CCT 落在 App 任务内、中转页 finish 只会露出
+CCT」打的补丁，且它无害的前提是**单 Activity**（manifest 证实，连 launcher 入口都是
+activity-alias）。库要服务任意结构的消费方——场景：多 Activity App 用户在
+`[首页, 设置, 绑定页]` 的绑定页发起绑定，REORDER 会把首页 Activity 提到栈顶，用户绑完
+被丢回首页、绑定页被埋，恰是 §5.5 明文警告的「把用户的位置弄丢」。管理页拓扑下 CCT
+由 CLEAR_TOP 清掉、管理页 finish 原地露出绑定页，无需 REORDER。
+
+### `singleTask` 装回来了？与 #2 不矛盾
+
+#2 反对的是「**接收浏览器外部 intent** 的 Activity 用 singleTask」。管理页不带
+intent-filter、`exported="false"`，只收库自己转发的内部 intent——flags 与时机全在库的
+掌控内。对外暴露面仍然只有 standard 的哑中转页。
+
+顺带记录评审时的真实疑问「为什么不把两个 Activity 合成一个」：合并后必须给合体
+Activity 配 singleTask 才能让浏览器 intent 命中栈内既有实例（standard 下回跳会新建第二个
+实例，CLEAR_TOP 按类匹配会命中新实例自己、清不掉 CCT），等于把 singleTask 重新请回
+外部 intent 路径，#2 的全部边角回归；且持有流程状态的 Activity 变成 exported 面，任意
+App 可向它发伪造 intent。两家都拆成两个，不是巧合。
+
+### #977 免疫：data-first 状态机（§4 的红利兑现）
+
+管理页 `onResume` 状态机，**顺序即优先级**：
+
+1. `intent.data != null` → 投递（冷启动则停泊）→ 决定去向 → finish
+2. 未开过浏览器（`intentLaunched` 标志，存 `savedInstanceState`）且带授权参数 → 置位、开浏览器
+3. 未开过浏览器且无授权参数 → 意外启动，静默 finish
+4. 开过浏览器、无 data → 取消，投递 `Cancelled`，finish
+
+**本条的核心场景**：Android 14 按 #977 的行为把管理页**重建而非复用**——新实例的
+`savedInstanceState` 与 extras 都是空的，但转发 intent 里有完整回跳 URL：
+
+| 实现 | 重建实例的处境 | 结果 |
+|---|---|---|
+| AppAuth | pending request 随旧实例消失，响应配不上 | 流程断裂（#977 原文，open 三年） |
+| Auth0 | `intentLaunched=false` + extras 空 → 判「意外启动」 | 静默 finish，**结果丢失、无报错** |
+| 本库 | data-first 分支命中，URL 自带全部信息 | 照常投递 ✅ |
+
+免疫不是运气：§4 已裁定「回跳参数自带流程信息，不持久化 pending 状态」，两家会死
+恰因它们的响应必须与存储的请求配对。**分支顺序是两个场景的共同依赖**：重复回跳时
+新建的管理页同样「无 extras、有 data」，「意外启动」检查若放在前面，在重复场景吞掉的
+是无害的重复份，在重建场景吞掉的是**唯一的一份结果**。
+
+### 七条路径推演（均走通）
+
+| 路径 | 关键走向 | 结局 |
+|---|---|---|
+| Auth Tab 主路径 | launcher 回调直达管理页，中转页不出场 | 原地回发起页；关闭 = 确定的取消信号 |
+| CCT 回退 | 中转页转发，CLEAR_TOP 清掉 CCT | 原地回发起页；用户关 CCT → onResume 判取消，同为确定信号 |
+| 系统浏览器兜底 | 回跳把 App 任务带回前台，走同一漏斗 | 原地回发起页；用户自行切回 App → 判取消（启发式，优于 §6.2 的「永远挂着」） |
+| 进程被回收 | 中转页照常转发 → singleTask 新建管理页 → 静态槽无在途流程 → 停泊 URL → 起 launcher | §6.3 时序不变；`restore()` 排空停泊，结果从 `oauthResults` 送达 |
+| Android 14 重建（#977） | data-first 直接投递 | 见上表 ✅ |
+| 重复回跳（§6.1） | 首份处理后管理页已 finish → 新建 → otc 幂等命中缓存 | 用户无感 |
+| 浏览器历史陈旧链接 | 同上，otc 已失效 → `Failed` / `Unrecognized` | 不崩、不开浏览器、不留怪 Activity |
+
+取消检测因此形成分层（Auth Tab / CCT 确定，纯浏览器启发式）——收益归 #6，对齐时展开。
+
+### 对 §8 spike 清单的修订（正文待重写，先记在此）
+
+- **spike 2 撤销**：「`ActivityResultLauncher` 能否在 suspend 里临时注册」的悬案不存在——
+  launcher 注册在**管理页自己的 `onCreate`**（Auth0 实证：`AuthTabIntent.registerActivityResultLauncher(this)`），
+  与消费方 Activity、suspend 函数均无关
+- **spike 3 改述**：验证对象从「中转页的 isTaskRoot + 起 launcher」变为「管理页冷启动
+  分支 + 起 launcher 的真机行为」
+- **新增 spike**：Android 14+ 真机开「不保留活动」，验证管理页重建路径（#977 场景）真实走通
+- spike 4（Auth Tab 扛不扛进程死亡）不变，验不过仍由停泊机制兜底
+
+### 落地时的反向验证点（会话惯例：先破坏、确认变红、再恢复）
+
+1. 把 data-first 分支挪到 `intentLaunched` 检查之后（即退化成 Auth0 的顺序）→ 模拟
+   管理页重建的测试必须变红
+2. 把停泊判定从「静态槽里有无在途 AuthClient」改成任务/栈状态判断 → 进程回收冷启动
+   的测试必须变红
