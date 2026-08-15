@@ -152,7 +152,7 @@ class FeedApi(private val api: HttpClient) {
 
 邮箱验证码只用核心库即可；要用社交登录再加这个 Android-only 模块，**不用它的项目
 零感知**（没有 placeholder 要配、不会合并进多余的 Activity）。加上之后，授权页在
-合规的外部 user-agent 打开（Custom Tab，探测不到则系统浏览器），回跳捕获、登录/绑定
+合规的外部 user-agent 打开（Auth Tab → Custom Tab → 系统浏览器按可用性回退），回跳捕获、登录/绑定
 分辨、otc 兑换、取消判定、进程被回收后的续跑——**一个都不用写**。
 
 ### 接线：一行依赖 + 每变体一行 placeholder

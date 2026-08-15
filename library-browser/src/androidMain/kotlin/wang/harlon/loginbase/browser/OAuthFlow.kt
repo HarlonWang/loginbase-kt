@@ -19,8 +19,9 @@ import wang.harlon.loginbase.OAuthProvider
  * 发起社交登录。**不挂起**——启动管理页即返回，结果只从 [AuthClient.oauthResults]
  * 送达（挂起返回值在屏幕旋转、进程回收下必然中断，见 design §11 差异 #5）。
  *
- * 浏览器按回退链选择：Custom Tab（任何实现 CustomTabsService 的浏览器）→ 系统浏览器；
- * Auth Tab 优先级在 2b 期加入。回跳的捕获、解析、取消判定、进程回收兜底全归库，
+ * 浏览器按三级回退链选择：Auth Tab（Chrome 137+，回跳在 Tab 内捕获、不经 Intent、
+ * 无劫持暴露面）→ Custom Tab（任何实现 CustomTabsService 的浏览器）→ 系统浏览器。
+ * 回跳的捕获、解析、取消判定、进程回收兜底全归库，
  * 消费方只需在 gradle 里给每个变体一行 `manifestPlaceholders["loginbaseRedirectScheme"]`。
  *
  * @param redirect 不传则由 manifest 的 meta-data 推导（[Loginbase.redirectUri]），

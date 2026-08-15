@@ -1,10 +1,11 @@
 package wang.harlon.loginbase.browser
 
-import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.browser.auth.AuthTabIntent
 import androidx.browser.customtabs.CustomTabsClient
 import androidx.browser.customtabs.CustomTabsIntent
 import kotlinx.coroutines.CancellationException
@@ -26,9 +27,31 @@ import wang.harlon.loginbase.oauthFailureReason
  * 转发的 intent，不接浏览器的外部 intent（那是中转页的活）。
  */
 @OptIn(LoginbaseInternalApi::class)
-internal class LoginbaseAuthActivity : Activity() {
+internal class LoginbaseAuthActivity : ComponentActivity() {
 
     private lateinit var controller: OAuthFlowController
+
+    /**
+     * Auth Tab 的结果通道（三级链第一级）：浏览器在 Tab 内捕获回跳、经 ActivityResult
+     * 直接回到这里——不经 Intent、不经中转页，没有被其他 App 劫持的暴露面；取消是
+     * 确定的结果码。属性初始化器时机 = 构造期，满足「STARTED 之前注册」的要求
+     * （Auth0 的 AuthenticationActivity 同款写法）。
+     */
+    private val authTabLauncher = AuthTabIntent.registerActivityResultLauncher(this) { result ->
+        when (val action = mapAuthTabResult(result.resultCode, result.resultUri?.toString())) {
+            is FlowAction.Deliver -> deliver(action.url)
+            FlowAction.DeliverCancelled -> {
+                publishAsync(OAuthOutcome.Cancelled)
+                finish()
+            }
+            is FlowAction.DeliverFailed -> {
+                publishAsync(OAuthOutcome.Failed(action.reason))
+                finish()
+            }
+            // mapAuthTabResult 只产出上面三种；穷尽 when 防新增动作被静默漏接
+            FlowAction.LaunchBrowser, FlowAction.FinishUnexpected -> finish()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,6 +73,9 @@ internal class LoginbaseAuthActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        // Auth Tab 的结果回调先于 onResume 送达并已 finish；不挡掉的话，下面的状态机
+        // 会把「无 data 的 resume」误判成取消、投递一份多余的 Cancelled（Auth0 同款守卫）
+        if (isFinishing) return
         when (val action = controller.onResume(
             hasLaunchRequest = intent?.hasExtra(EXTRA_MODE) == true,
         )) {
@@ -58,6 +84,10 @@ internal class LoginbaseAuthActivity : Activity() {
             FlowAction.FinishUnexpected -> finish()
             FlowAction.DeliverCancelled -> {
                 publishAsync(OAuthOutcome.Cancelled)
+                finish()
+            }
+            is FlowAction.DeliverFailed -> {
+                publishAsync(OAuthOutcome.Failed(action.reason))
                 finish()
             }
         }
@@ -88,7 +118,7 @@ internal class LoginbaseAuthActivity : Activity() {
         val redirect = intent.getStringExtra(EXTRA_REDIRECT) ?: run { finish(); return }
 
         when (intent.getStringExtra(EXTRA_MODE)) {
-            MODE_SIGN_IN -> openBrowser(client, client.signInUrl(provider, redirect))
+            MODE_SIGN_IN -> openBrowser(client, client.signInUrl(provider, redirect), redirect)
             MODE_LINK -> OAuthFlowRuntime.scope.launch {
                 // link 的授权 URL 要先带 Bearer POST 换取（浏览器导航带不了鉴权头），
                 // 这次往返里用户停在透明页上
@@ -105,24 +135,36 @@ internal class LoginbaseAuthActivity : Activity() {
                     // 等待期间用户按返回退出了：流程已被放弃
                     client.publishOAuthOutcome(OAuthOutcome.Cancelled)
                 } else {
-                    openBrowser(client, url)
+                    openBrowser(client, url, redirect)
                 }
             }
             else -> finish()
         }
     }
 
-    /** 三级链的后两级（Auth Tab 是 2b）：CCT provider 探测命中则 CCT，否则系统浏览器 */
-    private fun openBrowser(client: AuthClient, url: String) {
+    /** 三级回退链：Auth Tab（Chrome 137+）→ Custom Tab → 系统浏览器（§11 差异 #9） */
+    private fun openBrowser(client: AuthClient, url: String, redirect: String) {
         val uri = Uri.parse(url)
         try {
             val cctPackage = CustomTabsClient.getPackageName(this, null)
-            if (cctPackage != null) {
-                CustomTabsIntent.Builder().build()
+            val tier = selectBrowserTier(
+                authTabSupported = cctPackage != null &&
+                    CustomTabsClient.isAuthTabSupported(this, cctPackage),
+                cctPackage = cctPackage,
+            )
+            if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+                android.util.Log.i("loginbase", "browser tier = $tier (provider = $cctPackage)")
+            }
+            when (tier) {
+                BrowserTier.AUTH_TAB -> AuthTabIntent.Builder().build()
+                    .apply { intent.setPackage(cctPackage) }
+                    // 第三参是回跳 scheme：浏览器据此在 Tab 内截住回跳、经 launcher 送回。
+                    // redirect 由 redirectUri()/自检把关过形态，scheme 缺失属防御不可达
+                    .launch(authTabLauncher, uri, requireNotNull(Uri.parse(redirect).scheme))
+                BrowserTier.CUSTOM_TAB -> CustomTabsIntent.Builder().build()
                     .apply { intent.setPackage(cctPackage) } // 锁定探测到的 provider，防被 App Links 截走
                     .launchUrl(this, uri)
-            } else {
-                startActivity(Intent(Intent.ACTION_VIEW, uri))
+                BrowserTier.SYSTEM_BROWSER -> startActivity(Intent(Intent.ACTION_VIEW, uri))
             }
         } catch (e: ActivityNotFoundException) {
             // 设备上一个能开 http(s) 的应用都没有——极罕见，但必须给出结果而不是挂死

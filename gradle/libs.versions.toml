@@ -10,6 +10,8 @@ kotlinx-serialization = "1.11.0"
 kotlinx-coroutines = "1.11.0"
 # browser 模块专用（可选 artifact，核心的依赖最小集不含它）
 androidx-browser = "1.9.0"
+# Auth Tab 的 ActivityResultLauncher 需要 ComponentActivity（browser 模块直接引用其类型，显式声明不吃传递）
+androidx-activity = "1.9.3"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
@@ -26,6 +28,7 @@ ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
 ktor-client-auth = { module = "io.ktor:ktor-client-auth", version.ref = "ktor" }
 # ↓ 仅 :library-browser 使用。coroutines-android 与 core 复用同一个版本条目，防 class-path 双版本
 androidx-browser = { module = "androidx.browser:browser", version.ref = "androidx-browser" }
+androidx-activity = { module = "androidx.activity:activity", version.ref = "androidx-activity" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "kotlinx-coroutines" }
 
 [plugins]

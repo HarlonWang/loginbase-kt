@@ -13,6 +13,9 @@ internal sealed interface FlowAction {
 
     /** 开过浏览器、回来时两手空空：用户放弃了授权 */
     data object DeliverCancelled : FlowAction
+
+    /** 流程在浏览器环节失败（Auth Tab 的异常结果码等）：投递 Failed 后收场 */
+    data class DeliverFailed(val reason: String) : FlowAction
 }
 
 /**
