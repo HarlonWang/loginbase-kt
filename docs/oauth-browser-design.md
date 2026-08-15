@@ -370,7 +370,7 @@ Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 
 | 来源 | 路径 | 相关文件 |
 |---|---|---|
-| 消费方（Android/KMP） | `~/TrendingProjects/TrendingAI` | `androidApp/.../AuthRedirectActivity.kt`、`shared/.../auth/LoginbaseAuthManager.kt`、`androidApp/build.gradle.kts` |
+| 消费方（Android/KMP） | `~/TrendingProjects/TrendingAI`（**分支 `feat/loginbase-auth`**，main 上没有这些文件） | `androidApp/.../AuthRedirectActivity.kt`、`shared/.../auth/LoginbaseAuthManager.kt`、`androidApp/build.gradle.kts` |
 | 消费方服务端 | `~/TrendingProjects/github-ai-trending-api` | `src/lib/loginbase.js`、`wrangler.toml` 的 `AUTH_DEEPLINKS` |
 | 本库服务端 | `~/loginbase` | `src/token.ts`、`src/middleware.ts` |
 | 参考实现 | GitHub | AppAuth-Android 的 `RedirectUriReceiverActivity` 与 `library/AndroidManifest.xml`（已逐字核对） |
@@ -384,7 +384,7 @@ Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 | # | 决策点 | 本文原设计 | TrendingAI | AppAuth | 裁决 | 状态 |
 |---|---|---|---|---|---|---|
 | 1 | scheme 怎么传 | `${applicationId}` | placeholder + `buildConfigField` 双喂 | `${appAuthRedirectScheme}` placeholder | **placeholder + `<meta-data>`** | ✅ 已对齐 |
-| 2 | 中转页 launchMode | `singleTask` | `standard` | **无（默认 standard）** | `standard` | ⬜ 待对齐 |
+| 2 | 中转页 launchMode | `singleTask` | `standard` | **无（默认 standard）** | **不写**（standard） | ✅ 已对齐 |
 | 3 | 怎么回到 App | `isTaskRoot` 分支 | `REORDER_TO_FRONT` | 转交管理 Activity → `PendingIntent` | `getLaunchIntentForPackage` + `REORDER_TO_FRONT` | ⬜ 待对齐 |
 | 4 | redirect 形态 | 带 host | `scheme:/path` 无 host | 不限定 | 无 host（RFC 8252 §7.1 示例形态） | ⬜ 待对齐 |
 | 5 | 结果通道 | 双通道（返回值 + flow） | 单通道（bus） | 单通道（PendingIntent） | **单通道**，且 `signIn()` 可不必挂起 | ⬜ 待对齐 |
@@ -450,3 +450,73 @@ README 需要一个独立小节，含「三处一致」表与**症状 → 原因
 **明确不做**：debug 构建预检服务端（发起前探一次 start 端点）。浏览器里的
 `invalid_redirect` 本身并不隐蔽（地址栏能看到发出去的 redirect 值），不值得每次登录多一次
 请求 + 一条只在 debug 存在的代码路径。
+
+## 差异 #2 的完整结论（已对齐）
+
+### 裁决
+
+**中转页不写 `launchMode`（即默认 `standard`）。撤回正文 §5.3 草图里的 `singleTask`。**
+顺带采纳 TrendingAI 的 `android:excludeFromRecents="true"`（见文末）。
+
+### 场景一：重复回跳落在 `finish()` 尚未完成的窗口里
+
+§6.1 已把重复送达当作必须处理的现实（系统重放 Intent、用户手动点浏览器里的链接、
+回退判定失误）。设想：
+
+1. 用户授权完成，回跳拉起中转页，`onCreate` 拿到 URL、投递、调 `finish()`
+2. `finish()` 不是瞬时的——实例要走完生命周期才销毁；就在这个窗口里，第二个重复 intent 到达
+
+| | `standard`（裁决） | `singleTask`（正文原案） |
+|---|---|---|
+| 第二个 intent 的去向 | 新建一个实例，照常走 `onCreate` | 复用旧实例，改走 **`onNewIntent`** |
+| 中转页要实现的入口 | 只有 `onCreate` | `onCreate` **和** `onNewIntent` 两条 |
+| 漏写第二条的症状 | 不存在第二条 | 回跳被**静默吞掉**，用户停在浏览器里 |
+
+`standard` 下重复送达由 §6.1 的 otc 幂等兜住（第二个实例送进同一个 otc，拿到缓存结果）——
+去重本来就必须做，不因 launchMode 改变。`singleTask` 买到的「任务内唯一实例」对一个
+存活几百毫秒、无状态、见谁都 `finish` 的转发 Activity 毫无价值，却强加了一条只在边角
+时序里才会被走到的代码路径。**多数时候它表现与 `standard` 完全一样，这正是危险所在**：
+测试全绿，分岔只在真机的边角时序里出现。
+
+### 场景二：`singleTask` 与正文自己的 `isTaskRoot` 判据打架
+
+AppAuth issue #170（已核对原文）：多进程 + 自定义 taskAffinity 的 App 里，`singleTask`
+会把授权 Activity 劈进**独立任务**。套到正文设计上：中转页独立成任务根 →
+`isTaskRoot == true` → §5.5 误判「进程被回收」→ 起 launcher intent——App 明明活着，
+在深层绑定页上的用户被踢回首页，恰好是 §5.5 自己明文要避免的事故。正文的 `singleTask`
+和 `isTaskRoot` 单看各自都像对的，合在一起互相拆台。
+
+### AppAuth 的 `singleTask` 装在哪，为什么本库连那个位置都没有
+
+AppAuth 的 manifest（已逐字核对）里 launchMode 是有分工的：
+
+| Activity | launchMode | 用途 |
+|---|---|---|
+| `RedirectUriReceiverActivity`（接收器，= 我们的中转页） | **不写** | 收 intent、转交、finish |
+| `AuthorizationManagementActivity`（等在栈下面的管理者） | `singleTask` | 回跳时把自己提回栈顶，顺带清掉上面的 Custom Tab |
+
+正文把参考实现里**管理者**的属性安到了**接收器**头上。而本库按 #3 的裁决不设管理
+Activity（launcher intent + `REORDER_TO_FRONT` 直达），`singleTask` 在本方案里没有
+出场位置。
+
+况且 AppAuth 自己的 `singleTask` 也是持续的坑源，两条 issue 已核对原文：
+
+- **#170**：多进程 + 自定义 taskAffinity 时，`singleTask` 把「管理者 → Custom Tab」劈进
+  独立任务，活动栈无法管理。closed，维护方只有解释、没有解法
+- **#977**：Android 14 上 `singleTask` 的管理者在回跳时被**重建而非复用**，`onResume`
+  里等结果的逻辑失效、登录断裂；报告者把 launchMode 改成 `singleInstance` 才绕过，
+  issue 至今 open
+
+> 引证更正：TrendingAI 注释里「他们改用了 singleInstance」的「他们」是 #977 的
+> **报告者**（一个使用 AppAuth 的 App），不是 AppAuth 本身——master 的 manifest 至今
+> 仍是 `singleTask`。顺手记下，防以后误引。
+
+结论：这条链路上任何非默认的 launchMode 都是行为分岔的来源；库能选的最可预测的值就是
+「不写」。TrendingAI 的 manifest 注释同判：「刻意保持默认 launchMode（同 AppAuth 的
+RedirectUriReceiverActivity）——不把 OAuth 的特殊需求写进主 Activity 的全局启动语义」。
+
+### 顺带：`excludeFromRecents="true"`
+
+TrendingAI 的中转页有、正文草图没有。**采纳。** 场景：冷启动通路（§6.3）里中转页是新
+任务的根，不加的话「最近任务」列表会闪出一个无名的透明条目；它转瞬即逝，不该留痕。
+App 存活的通路里它落在 App 既有任务栈顶、不单独成条目，此属性无副作用。
