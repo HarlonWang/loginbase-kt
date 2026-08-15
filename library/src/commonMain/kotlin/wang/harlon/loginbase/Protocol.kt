@@ -16,37 +16,34 @@ val PROTOCOL_VERSION: String = "1.3.0"
  * 消费方要原始串用 [LoginbaseException.Api.rawError]。
  */
 enum class AuthError(internal val wire: String) {
-    /** code/send：邮箱格式非法 */
     INVALID_EMAIL("invalid_email"),
 
-    /** code/send：限流命中，响应带 retryAfterSeconds */
+    /** 限流命中，响应带 retryAfterSeconds */
     TOO_MANY_REQUESTS("too_many_requests"),
 
-    /** code/verify：无有效验证码（未发过 / 已过期 / 已焚毁） */
+    /** 无有效验证码（未发过 / 已过期 / 已焚毁） */
     CODE_EXPIRED("code_expired"),
 
-    /** code/verify：验证码不匹配。注意协议**不返回剩余尝试次数**，UI 文案不得写「还可再试 N 次」 */
+    /** 验证码不匹配。协议**不返回剩余尝试次数**，UI 文案不得写「还可再试 N 次」 */
     INVALID_CODE("invalid_code"),
 
-    /** code/verify：累计 5 次错误，码即焚，需重新发码 */
+    /** 累计 5 次错误，码即焚，需重新发码 */
     TOO_MANY_ATTEMPTS("too_many_attempts"),
 
-    /** refresh：登录态终结，附带 [RefreshFailure] 归因 */
+    /** 登录态终结，附带 [RefreshFailure] 归因 */
     INVALID_REFRESH_TOKEN("invalid_refresh_token"),
 
-    /** oauth start / link start：redirect 缺失或不在服务端白名单 */
+    /** redirect 缺失或不在服务端白名单 */
     INVALID_REDIRECT("invalid_redirect"),
 
-    /** oauth callback：state 缺失 / 无效 / 已使用 */
     INVALID_STATE("invalid_state"),
 
-    /** oauth exchange：otc 无效 / 已使用 / 过期（60s、单次） */
+    /** otc 无效 / 已使用 / 过期（60s、单次） */
     INVALID_OTC("invalid_otc"),
 
-    /** oauth 端点：服务端未配置该插件（link 端点还需 onLinked 已提供） */
+    /** 服务端未配置该插件 */
     NOT_CONFIGURED("not_configured"),
 
-    /** 服务端内部错误 */
     INTERNAL("internal"),
 
     /** 服务端返回了本客户端尚未认识的错误码 */
@@ -63,7 +60,6 @@ enum class AuthError(internal val wire: String) {
  * 均应视为登录态终结、引导重新登录。`wire` / `fromWire` 的 `internal` 同 [AuthError]。
  */
 enum class RefreshFailure(internal val wire: String) {
-    /** 请求体缺 refreshToken */
     MISSING_TOKEN("missing_token"),
 
     /** token 无对应会话（伪造 / 已清理） */
@@ -72,10 +68,9 @@ enum class RefreshFailure(internal val wire: String) {
     /** 重用检测触发（真重用或救活护栏超限），整条 family 已撤销 */
     SESSION_REVOKED("session_revoked"),
 
-    /** 会话已过 refreshTtlMs（服务端配置了才会出现） */
+    /** 服务端配置了 refreshTtlMs 才会出现 */
     SESSION_EXPIRED("session_expired"),
 
-    /** 轮换内部失败（罕见） */
     ROTATE_FAILED("rotate_failed"),
 
     /** 服务端返回了本客户端尚未认识的归因 */

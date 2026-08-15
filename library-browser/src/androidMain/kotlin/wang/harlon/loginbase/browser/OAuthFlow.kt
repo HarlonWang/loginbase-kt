@@ -128,7 +128,7 @@ private fun logRedirectOnceInDebug(context: Context, redirect: String) {
 
 internal const val META_REDIRECT_SCHEME = "loginbase.redirectScheme"
 
-/** 进程级运行时：静态槽 + 投递 scope。进程死亡即消失，冷启动走停泊通路。 */
+/** 进程级运行时：静态槽 + 投递 scope；进程死亡即消失，冷启动走停泊通路。 */
 internal object OAuthFlowRuntime {
     @Volatile
     var activeClient: AuthClient? = null

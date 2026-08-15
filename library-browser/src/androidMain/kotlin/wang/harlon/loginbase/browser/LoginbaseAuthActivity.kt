@@ -19,19 +19,16 @@ import wang.harlon.loginbase.OAuthProvider
 import wang.harlon.loginbase.oauthFailureReason
 
 /**
- * 管理页：`signIn()/link()` 启动它，压在浏览器页下面当锚点——开浏览器、收结果、
- * 判取消、决定去向、投递。判定全在 [OAuthFlowController]，本类只是执行者。
- * 透明 + 不 exported + singleTask（只收库内转发，不接浏览器外部 intent）。
+ * 管理页：压在浏览器页下面当锚点——开浏览器、收结果、判取消、决定去向、投递。
+ * 判定全在 [OAuthFlowController]，本类只是执行者。
  */
 @OptIn(LoginbaseInternalApi::class)
 internal class LoginbaseAuthActivity : ComponentActivity() {
 
     private lateinit var controller: OAuthFlowController
 
-    /**
-     * Auth Tab 的结果通道：回跳在 Tab 内被捕获、经 ActivityResult 直达这里，不经
-     * Intent 与中转页。属性初始化器 = 构造期注册，满足「STARTED 之前」的要求。
-     */
+    // Auth Tab 的结果通道（回跳不经 Intent 与中转页）。属性初始化器 = 构造期注册，
+    // 满足「STARTED 之前」的要求
     private val authTabLauncher = AuthTabIntent.registerActivityResultLauncher(this) { result ->
         when (val action = mapAuthTabResult(result.resultCode, result.resultUri?.toString())) {
             is FlowAction.Deliver -> deliver(action.url)

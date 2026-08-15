@@ -15,19 +15,15 @@ sealed interface OAuthOutcome {
     data class Linked(val provider: OAuthProvider) : OAuthOutcome
 
     /**
-     * 流程失败。[reason] 尽量透传原始错误码（回跳 `error` 参数或兑换失败的服务端码，
-     * 值由服务端 App 定义、非协议保证）；本地失败用固定串 `network` / `storage` /
-     * `malformed_response`。
+     * 流程失败。[reason] 透传原始错误码（值由服务端 App 定义、非协议保证）；
+     * 本地失败用固定串 `network` / `storage` / `malformed_response`。
      */
     data class Failed(val reason: String) : OAuthOutcome
 
     /** 用户主动放弃（关掉授权页）。由浏览器模块判定投递，不从 [AuthClient.handleOAuthCallback] 产生。 */
     data object Cancelled : OAuthOutcome
 
-    /**
-     * 回跳 URL 不是本库认得的形状（含畸形 percent 编码）——接入配置错误或外部程序
-     * 塞了异常输入，该报给开发者。
-     */
+    /** 回跳 URL 不是本库认得的形状——配置错误或外部异常输入，该报给开发者。 */
     data class Unrecognized(val url: String) : OAuthOutcome
 }
 
@@ -72,9 +68,8 @@ fun LoginbaseException.oauthFailureReason(): String = when (this) {
 }
 
 /**
- * 进程被回收后的回跳**停泊槽**：浏览器模块的管理页写入，[AuthClient.restore] 排空
- * （中转页必先于 App 启动，时序天然成立）。槽住核心以保持 browser → core 单向依赖；
- * 单槽后到覆盖先到——同一时刻至多一个在途流程。
+ * 进程被回收后的回跳停泊槽：管理页写入、[AuthClient.restore] 排空。
+ * 住核心以保持 browser → core 单向依赖；单槽后到覆盖先到。
  */
 internal object OAuthCallbackParking {
     @Volatile

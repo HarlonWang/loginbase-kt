@@ -19,13 +19,9 @@ internal sealed interface FlowAction {
 }
 
 /**
- * 管理页的状态机，抽出来做纯 JVM 单测。两条非显然设计（均有反向验证）：
- *
- * 1. **data-first**：回跳 data 的检查排在一切状态检查之前——系统重建的实例状态全空、
- *    只有转发 intent 里的 data，顺序颠倒就会把唯一的结果当「意外启动」吞掉；
- * 2. **控制器自持最新 intent**：判定不依赖 `getIntent()`/`setIntent()` 组合，
- *    「漏写 setIntent 导致成功被判成取消」的陷阱结构上不存在。
- * 论证与参考实现对照见 docs/oauth-browser-design.md。
+ * 管理页的状态机（纯类，可 JVM 单测）。**data-first 的分支顺序是硬约束**：
+ * 系统重建的实例状态全空、只有转发 intent 里的 data，顺序颠倒会把唯一的结果
+ * 当「意外启动」吞掉。论证见 docs/oauth-browser-design.md。
  */
 internal class OAuthFlowController(intentLaunched: Boolean) {
 

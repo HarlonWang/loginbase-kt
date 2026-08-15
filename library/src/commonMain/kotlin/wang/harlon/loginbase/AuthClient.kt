@@ -38,15 +38,11 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 
 /**
- * loginbase 客户端，实现 [PROTOCOL_VERSION] 声明的协议版本（协议权威见服务端仓）。
+ * loginbase 客户端，实现 [PROTOCOL_VERSION] 声明的协议版本。
+ * **请当单例持有（每进程一个）**：单飞锁是实例字段（docs/design.md 第 1 节）。
+ * 库不解析 JWT——原样存、原样用，客户端没有本地时间依赖。
  *
- * **请当单例持有（每进程一个）**：单飞 refresh 的锁是实例字段，多实例就是多把锁；
- * 跨进程刻意不做互斥。论证与事故史见 docs/design.md 第 1 节。
- * 库不解析 JWT——原样存、原样用，客户端因此没有本地时间依赖（第 2 节）。
- *
- * @param baseUrl 服务端挂载点，如 `https://api.example.com/auth`（末尾斜杠会被去掉）
- * @param tokenStore 令牌持久化，见 [TokenStore] 的同步落盘要求
- * @param configure 可选配置，见 [LoginbaseConfig]
+ * @param baseUrl 服务端挂载点，如 `https://api.example.com/auth`
  */
 class AuthClient(
     baseUrl: String,
@@ -95,16 +91,13 @@ class AuthClient(
     private val refreshMutex = Mutex()
 
     /**
-     * 存储写入互斥，与 [refreshMutex] 分工：那把跨整个 HTTP 往返（秒级），这把只包
-     * 本地读写（毫秒级）。[signOut] 只取这把——登出不该被在途刷新卡住。
-     * 嵌套顺序固定 refreshMutex 外、storeMutex 内，无反向获取路径。
+     * 存储写入互斥（毫秒级；[refreshMutex] 跨 HTTP 往返是秒级）。[signOut] 只取这把——
+     * 登出不该被在途刷新卡住。嵌套固定 refreshMutex 外、storeMutex 内。
      */
     private val storeMutex = Mutex()
 
-    /**
-     * 已完成的刷新轮次（单飞共享的载体）。用 [MutableStateFlow]：[id] 要在锁**外**读，
-     * 不能依赖锁的内存语义；id 与 outcome 同对象，保证一起读到。
-     */
+    // 已完成的刷新轮次（单飞共享的载体）。MutableStateFlow：id 要在锁外读，
+    // 不能依赖锁的内存语义；id 与 outcome 同对象保证一起读到
     private data class RefreshRound(val id: Int, val outcome: RefreshOutcome?)
 
     private val lastRound = MutableStateFlow(RefreshRound(id = 0, outcome = null))
@@ -179,9 +172,8 @@ class AuthClient(
     )
 
     /**
-     * 消费方唯一的 OAuth 结果通道：发起 UI 可能在浏览器往返期间被重建甚至随进程消失，
-     * 结果不走返回值、只从这里广播。`replay = 1` 只兜「投递早于订阅」的时序，
-     * **不是历史记录**——处理完调 [consumeOauthResult] 清掉，防陈旧结果重放给后来的订阅者。
+     * 消费方唯一的 OAuth 结果通道（发起 UI 可能随进程消失，结果不走返回值）。
+     * `replay = 1` 只兜「投递早于订阅」，**不是历史记录**——处理完调 [consumeOauthResult] 清掉。
      */
     val oauthResults: SharedFlow<OAuthOutcome> = _oauthResults.asSharedFlow()
 
@@ -190,13 +182,11 @@ class AuthClient(
         _oauthResults.resetReplayCache()
     }
 
-    /**
-     * 最近一次 otc 兑换及结果（[oauthMutex] 保护）。otc 单次有效而回跳可能重复送达——
-     * 不去重的话第二次兑换得到 `invalid_otc`，与真过期无法区分，用户刚成功就看到假失败。
-     */
+    // 最近一次 otc 兑换及结果（oauthMutex 保护）：otc 单次有效而回跳可能重复送达，
+    // 不去重则第二次兑换 invalid_otc，用户刚成功就看到假失败
     private var lastOtcExchange: Pair<String, OAuthOutcome>? = null
 
-    /** 保护 [lastOtcExchange]，并把重复回跳的并发兑换收敛成一次（同 refresh 的单飞思路） */
+    // 保护 lastOtcExchange，并把重复回跳的并发兑换收敛成一次
     private val oauthMutex = Mutex()
 
     /**

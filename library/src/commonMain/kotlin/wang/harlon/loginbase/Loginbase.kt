@@ -4,10 +4,8 @@ package wang.harlon.loginbase
 object Loginbase {
 
     /**
-     * 当前 **App 显示给用户的语言**（BCP 47，如 `zh-Hans-CN`）；取不到返回 `null`。
-     *
-     * 是 [LoginbaseConfig.localeProvider] 的缺省值，也可用来拼自己的回落链：
-     * `localeProvider = { settings.languageTag ?: Loginbase.appLanguageTag() }`。
+     * 当前 App 显示给用户的语言（BCP 47）；取不到返回 `null`。
+     * 是 [LoginbaseConfig.localeProvider] 的缺省值，也可用来拼自己的回落链。
      */
     fun appLanguageTag(): String? = platformLanguageTag()
 }
