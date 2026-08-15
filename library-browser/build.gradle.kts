@@ -32,6 +32,8 @@ kotlin {
             // 不必再手写一行 :library 依赖
             api(project(":library"))
             implementation(libs.androidx.browser)
+            // 管理页 = ComponentActivity：Auth Tab 的结果经 ActivityResultLauncher 回来
+            implementation(libs.androidx.activity)
             // Dispatchers.Main 的 Android 实现。版本与 core 的 coroutines 同一条目
             implementation(libs.kotlinx.coroutines.android)
         }

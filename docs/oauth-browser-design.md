@@ -423,7 +423,7 @@ data-first 是刻意的：Android 14 按 #977 的行为把管理页**重建而�
 |---|---|---|
 | 1 | **管理页冷启动分支的真机行为**：进程被回收后回跳 → 停泊 → 起 launcher | ✅ force-stop 后发回跳：中转页冷启动（新进程）→ 管理页新建、静态槽空 → 停泊 → `getLaunchIntentForPackage` **正确解析到动态图标的 activity-alias**（MainActivityBerry）→ MainActivity 冷启动（+1.66s）→ `restore()` 排空。用户观感就是一次干净的冷启动 |
 | 2 | **「不保留活动」验证重建路径**：#977 场景下 data-first 状态机真实走通 | ✅ 开「不保留活动」跑完整真实登录：管理页在浏览器覆盖期间被系统销毁，转发时**重建新实例**（logcat `Displayed +474ms`）→ data-first 投递 → 登录成功落盘。#977 免疫实测成立 |
-| 3 | **Auth Tab 的 callback 能否扛住进程死亡**，以及可用性检测 API | ⬜ 留 2b 期验证；风险已被中转页/管理页兜住，只影响走哪级链 |
+| 3 | **Auth Tab 的 callback 能否扛住进程死亡**，以及可用性检测 API | 🔶 2b 已落地：检测 API 确定为 `CustomTabsClient.isAuthTabSupported`，launcher 注册在管理页构造期（Auth0 同款）；**激活路径与进程死亡行为待 Chrome 137+ 环境补验**（验收模拟器 Chrome 133）。风险仍被中转页/管理页兜住 |
 
 同场验收通过的其余路径：真实 GitHub 登录成功链（服务端 302 → 授权 → 回跳 →
 中转页 → CLEAR_TOP 转交 → 兑换落盘 → UI 就位）；取消（用户停留浏览器后返回 →
@@ -431,13 +431,29 @@ data-first 是刻意的：Android 14 按 #977 的行为把管理页**重建而�
 陈旧回跳链接（伪 otc 静默 `Failed`，不崩、不打扰、登录态不动）；发起前自检与
 debug 日志打印。
 
-**遗留待查/待验**（不阻塞 2a）：
+**遗留项进展（2b 期同日更新）**：
 
-- 模拟器上 `CustomTabsIntent` 呈现为**完整 Chrome 标签页**而非 CCT 框（疑与 Chrome
-  首启流程或 Android 16 行为有关）。功能不受影响（回位、取消均验过），形态原因待查
-- 「CCT 探测失败落系统浏览器」在只有 Chrome 的模拟器上无法自然触发，留真机
-  （无 CCT provider 的国产 ROM）补验
+- ~~CCT 呈现为完整 Chrome 标签页~~ → **原因定位并修复**：库 manifest 缺 Android 11+
+  包可见性的 `<queries>` 声明，`CustomTabsClient.getPackageName` 恒返回 null，三级链
+  **静默退化**到系统浏览器（AppAuth/Auth0 的库 manifest 都带这块，此前逐字核对只盯了
+  activity 部分）。补上后实测 tier = CUSTOM_TAB、CCT 成功链含 CLEAR_TOP 回位走通。
+  教训：静默降级类故障要靠把选择结果打出来暴露——已给 debug 构建加 tier 日志
+- ~~系统浏览器兜底补验~~ → **已验**：queries 修复前的形态恰好就是纯 ACTION_VIEW 通路，
+  真实登录成功与「返回判取消」均实测通过
 - link 绑定流程未验：验收账号已绑定 GitHub，入口不出现；待解绑或用第二账号补验
+
+**国产 ROM 真机补验（小米 13 / HyperOS(Android 16) / 无 Chrome，2b 期同日）**：
+
+- **tier 探测**：设备无 Chrome，但第三方轻量浏览器 Via（`mark.via`）实现了
+  CustomTabsService——探测正确命中 `CUSTOM_TAB (provider = mark.via)`。修正差异 #9
+  的预设：「无 Chrome 国产机」不必然落系统浏览器，第三方浏览器可能供 CCT
+- **MIUI 链式启动管控**：拉起浏览器前系统插一道「启动应用」用户弹窗。对库透明——
+  允许则流程照常；拒绝的表现等同用户取消（返回 App 时管理页判 `Cancelled`），语义恰好正确
+- **CCT 关闭取消**：Via 的 CCT 框（× + 只读地址栏）点 × → 回 App 收到确定
+  `Cancelled`、面板复位——此前模拟器上因 GitHub 已授权自动跳转太快无法验到的形态
+- **成功链**：CCT → 302 → GitHub 授权 → 回跳 → 兑换落盘全链走通（需设备侧代理：
+  无代理时 GitHub TLS 层被干扰、302 链停在空白页——对照实验证实与库/服务端无关，
+  属 GitHub OAuth 对国内用户的既有现实）
 
 原「AGP 允不允许库 manifest 用 `${applicationId}`」随差异 #1 撤回该方案而消失——
 placeholder 是 AppAuth/Auth0 在海量设备上验证过的同款机制，无 AGP 未知数（实测

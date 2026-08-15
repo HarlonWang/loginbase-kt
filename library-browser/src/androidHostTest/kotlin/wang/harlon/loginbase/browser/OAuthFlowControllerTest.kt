@@ -104,3 +104,61 @@ class OAuthFlowControllerTest {
         assertEquals(FlowAction.Deliver(url), c.onResume(hasLaunchRequest = false))
     }
 }
+
+/**
+ * 三级回退链选择与 Auth Tab 结果映射（design：§11 差异 #9 / 2b 期）。
+ * 纯函数，Activity 只是执行者。
+ */
+class BrowserTierTest {
+
+    @Test
+    fun `Auth Tab 可用即第一级`() {
+        assertEquals(BrowserTier.AUTH_TAB, selectBrowserTier(authTabSupported = true, cctPackage = "com.android.chrome"))
+    }
+
+    @Test
+    fun `无 Auth Tab 落 CCT`() {
+        assertEquals(BrowserTier.CUSTOM_TAB, selectBrowserTier(authTabSupported = false, cctPackage = "org.mozilla.firefox"))
+    }
+
+    @Test
+    fun `无 provider 落系统浏览器`() {
+        // 防御维度：authTabSupported 不该在无 provider 时为 true，真发生也不能选出 AUTH_TAB
+        assertEquals(BrowserTier.SYSTEM_BROWSER, selectBrowserTier(authTabSupported = false, cctPackage = null))
+        assertEquals(BrowserTier.SYSTEM_BROWSER, selectBrowserTier(authTabSupported = true, cctPackage = null))
+    }
+
+    @Test
+    fun `Auth Tab 成功结果映射为投递`() {
+        val url = "cn.example:/loginbase/callback?otc=abc"
+        assertEquals(
+            FlowAction.Deliver(url),
+            mapAuthTabResult(androidx.browser.auth.AuthTabIntent.RESULT_OK, url),
+        )
+    }
+
+    @Test
+    fun `Auth Tab 取消是确定的结果码`() {
+        assertEquals(
+            FlowAction.DeliverCancelled,
+            mapAuthTabResult(androidx.browser.auth.AuthTabIntent.RESULT_CANCELED, null),
+        )
+    }
+
+    @Test
+    fun `异常结果码全部映射为 Failed 不静默吞`() {
+        // OK 但没有 uri / verification 两码 / 未知码——任何结果都必须给出去
+        assertEquals(
+            FlowAction.DeliverFailed("auth_tab_missing_uri"),
+            mapAuthTabResult(androidx.browser.auth.AuthTabIntent.RESULT_OK, null),
+        )
+        assertEquals(
+            FlowAction.DeliverFailed("auth_tab_verification_failed"),
+            mapAuthTabResult(androidx.browser.auth.AuthTabIntent.RESULT_VERIFICATION_FAILED, null),
+        )
+        assertEquals(
+            FlowAction.DeliverFailed("auth_tab_unknown"),
+            mapAuthTabResult(androidx.browser.auth.AuthTabIntent.RESULT_UNKNOWN_CODE, null),
+        )
+    }
+}
