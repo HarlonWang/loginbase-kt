@@ -19,34 +19,29 @@ internal sealed interface FlowAction {
 }
 
 /**
- * 管理页的状态机（design：oauth-browser 方案 §6.4），从 Activity 里抽出来做纯 JVM 单测。
+ * 管理页的状态机，抽出来做纯 JVM 单测。两条非显然设计（均有反向验证）：
  *
- * 两条非显然的设计都在这里，也都做了反向验证（见 OAuthFlowControllerTest）：
- *
- * 1. **data-first，顺序即优先级**：回跳 data 的检查排在一切状态检查之前。Android 14
- *    可能重建而非复用管理页（AppAuth #977），重建实例的 savedInstanceState 与 extras
- *    全是空的——只有转发 intent 里的 data 还在。把「意外启动」的判定排在 data 前面，
- *    吞掉的就是唯一那份结果（Auth0 正是这么丢的）。
- * 2. **控制器自己持有最新 intent**：`onCreate` 与 `onNewIntent` 都喂进 [onIntent]，
- *    判定不依赖 Activity 的 `getIntent()`/`setIntent()` 组合——漏写 `setIntent` 会让
- *    每次 Custom Tab 成功回跳都被判成取消，且单实例直跑的测试还全绿（design §11
- *    差异 #6 记录的陷阱）。这里把陷阱从「容易漏写」变成「结构上不存在」。
+ * 1. **data-first**：回跳 data 的检查排在一切状态检查之前——系统重建的实例状态全空、
+ *    只有转发 intent 里的 data，顺序颠倒就会把唯一的结果当「意外启动」吞掉；
+ * 2. **控制器自持最新 intent**：判定不依赖 `getIntent()`/`setIntent()` 组合，
+ *    「漏写 setIntent 导致成功被判成取消」的陷阱结构上不存在。
+ * 论证与参考实现对照见 docs/oauth-browser-design.md。
  */
 internal class OAuthFlowController(intentLaunched: Boolean) {
 
-    /** 是否已经开过浏览器。要跨进程死亡（进 savedInstanceState），否则重建后会重开授权页 */
+    /** 是否已开过浏览器。要进 savedInstanceState，否则重建后会重开授权页 */
     var intentLaunched: Boolean = intentLaunched
         private set
 
     private var latestData: String? = null
 
-    /** onCreate 与 onNewIntent 都喂到这里；null（非回跳 intent）不覆盖已有的 data */
+    /** onCreate 与 onNewIntent 都喂这里；null（非回跳 intent）不覆盖已有 data */
     fun onIntent(data: String?) {
         if (data != null) latestData = data
     }
 
     fun onResume(hasLaunchRequest: Boolean): FlowAction {
-        // data-first：见类文档第 1 条。挪到 intentLaunched 检查之后即复现 #977
+        // data-first：重建实例状态全空、只有 data，此检查必须最先（见类文档）
         latestData?.let { return FlowAction.Deliver(it) }
         if (!intentLaunched && hasLaunchRequest) {
             intentLaunched = true

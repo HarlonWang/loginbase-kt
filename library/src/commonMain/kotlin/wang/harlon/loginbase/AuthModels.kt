@@ -3,12 +3,7 @@ package wang.harlon.loginbase
 import kotlinx.serialization.json.JsonElement
 
 /**
- * 登录态。
- *
- * **「登录中」不在这里**——那是 UI 状态、归 App：登录流程由 App 驱动（输邮箱、等验证码、
- * 开浏览器授权），库无从知晓用户走到哪一步。
- *
- * 这里的每一态都对应一个**不同的 UI 处置**，多一态就是多一种要想清楚的情况：
+ * 登录态。「登录中」不在这里——那是 UI 状态、归 App。每一态对应一个不同的 UI 处置：
  *
  * | 态 | UI 该做什么 |
  * |---|---|
@@ -21,23 +16,13 @@ sealed interface AuthState {
     /** 尚未从存储恢复（[AuthClient.restore] 之前的初始态） */
     data object Unknown : AuthState
 
-    /**
-     * 有令牌在手。**不带 userId**——库不解析 JWT（见 [AuthClient] 关于时钟偏差的说明），
-     * 用户档案由 App 从自己的 `/me` 类端点取。
-     */
+    /** 有令牌在手。不带 userId——库不解析 JWT，用户档案由 App 从自己的端点取。 */
     data object SignedIn : AuthState
 
     /**
-     * 令牌还在，但最近一次刷新没打通（网络失败 / 5xx / 响应畸形 / 没存住）。
-     *
-     * **和 [SignedOut] 差得很远**：会话没有被清，服务端也没说它死了，多半只是弱网。
-     * 把这种情况当登出处理，就是把漫游、地铁里的用户踢下线——Logto 时代的原事故。
-     * 下一次刷新成功会自动回到 [SignedIn]。
-     *
-     * 之所以要单独成一态而不是留在 [SignedIn]：调用方光看 [SignedIn] 不知道
-     * 「下一个业务请求很可能 401」，做不了「显示离线角标」「暂缓后台同步」这类决定。
-     * supabase-kt 早期只有 `NetworkError`，后来专门重设计成 `SessionStatus.RefreshFailure`
-     * 也是这个原因。
+     * 令牌还在，但最近一次刷新没打通——会话没被清，**当登出处理会把弱网用户踢下线**。
+     * 单独成态是让调用方能做「显示离线角标、暂缓后台同步」这类决定；
+     * 下一次刷新成功自动回到 [SignedIn]。
      */
     data class RefreshFailed(val cause: LoginbaseException) : AuthState
 
@@ -48,25 +33,19 @@ sealed interface AuthState {
 }
 
 /**
- * 登出的成因。
- *
- * 分开是因为**UI 文案不同**：用户自己点的登出弹「登录已失效」是骚扰，
- * 而被服务端撤销了却一声不吭地跳回登录页，用户会以为是 App 出了 bug。
- * 光看「已登出」这一个信号，这两件事分不开。
+ * 登出的成因。分开是因为 UI 文案不同：自己点的登出弹「登录已失效」是骚扰，
+ * 被服务端撤销却一声不吭又会被当成 App 的 bug。
  */
 sealed interface SignOutReason {
-    /**
-     * 本地压根没有令牌——冷启动时最常见的情形（从没登录过，或上次已登出）。
-     * **不要提示任何东西**。
-     */
+    /** 本地压根没有令牌（冷启动最常见）。不要提示任何东西。 */
     data object NoSession : SignOutReason
 
     /** 用户主动登出（[AuthClient.signOut] / [AuthClient.signOutAll]）。同样不必提示。 */
     data object UserInitiated : SignOutReason
 
     /**
-     * 服务端明确判定会话已死，被动登出——**这一种才该提示**「登录已失效，请重新登录」。
-     * [reason] 可用来细化文案（如 [RefreshFailure.SESSION_REVOKED] 对应「账号在别处登录」）。
+     * 服务端明确判定会话已死，被动登出——**只有这一种才该提示**「登录已失效」。
+     * [reason] 可细化文案。
      */
     data class SessionEnded(val reason: RefreshFailure) : SignOutReason
 }
@@ -88,10 +67,7 @@ data class SendCodeResult(
     val cooldownSeconds: Int,
 )
 
-/**
- * 刷新结果。三种失败刻意分开，因为**处置方式不同**：
- * 只有 [SessionEnded] 才可以清会话。
- */
+/** 刷新结果。三种失败刻意分开：处置方式不同，只有 [SessionEnded] 才可以清会话。 */
 sealed interface RefreshOutcome {
     data class Success(val tokens: TokenPair) : RefreshOutcome
 
@@ -103,13 +79,7 @@ sealed interface RefreshOutcome {
 
     /**
      * 网络失败 / 超时 / 5xx / 响应畸形 / 没存住——**会话未被清除**，可以重试。
-     *
-     * 这个区分是 Logto 时代事故的直接教训：把暂时性失败当成会话失效来清，
-     * 会把弱网（漫游、地铁）用户的好会话踢下线。
-     *
-     * [cause] 收窄成 [LoginbaseException] 而不是 `Throwable`：调用方想按失败类别
-     * 分流（网络失败退避重试、[LoginbaseException.MalformedResponse] 上报开发者）时，
-     * 一个 `Throwable` 什么也告诉不了他，而裸的 ktor 异常又把实现细节写进了契约。
+     * [cause] 收窄成 [LoginbaseException]：调用方能按失败类别分流，又不把 ktor 写进契约。
      */
     data class Failed(val cause: LoginbaseException) : RefreshOutcome
 
@@ -117,4 +87,3 @@ sealed interface RefreshOutcome {
     data object NoSession : RefreshOutcome
 }
 
-// 异常类型见 [LoginbaseException]——本库抛出的一切都挂在那个 sealed 根下。

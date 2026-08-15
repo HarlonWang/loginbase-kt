@@ -1,27 +1,19 @@
 package wang.harlon.loginbase
 
 /**
- * 本客户端实现的服务端协议版本。
+ * 本客户端实现的服务端协议版本。协议权威是服务端仓的 `docs/protocol.md`，本仓不留副本。
  *
- * 协议的唯一权威是**服务端仓**的 `docs/protocol.md`（https://github.com/HarlonWang/loginbase），
- * 本仓不留副本。分仓后两端版本线独立——客户端有自己的版本号，靠这个常量声明
- * 「我实现的是哪一版协议」，两端版本号不追求相等。
- *
- * **刻意不是 `const val`**：`const` 是编译期常量，取值会被**内联进调用方的字节码**。
- * 消费方升级本库却不重新编译时，读到的仍是编译当时那个版本号——恰好毁掉这个常量
- * 存在的唯一理由。普通 `val` 走 getter，永远反映实际链接上的那个版本。
+ * **刻意不是 `const val`**：`const` 会被内联进消费方字节码，升级本库不重编译时读到旧值，
+ * 恰好毁掉本常量的用途；普通 `val` 走 getter，永远反映实际链接的版本。
  */
 val PROTOCOL_VERSION: String = "1.3.0"
 
 /**
- * 协议错误码（`{"error": "..."}` 的取值）。与 protocol.md 的错误码总表一一对应，
- * 契约测试据此断言；[UNKNOWN] 兜住服务端将来新增而客户端尚未认识的码——
- * 客户端不能因为多了一个错误码就崩，未知一律按通用失败处理。
+ * 协议错误码（`{"error": "..."}` 的取值），与 protocol.md 错误码总表一一对应；
+ * [UNKNOWN] 兜住服务端新增而客户端尚未认识的码。
  *
- * `wire` 与 `fromWire` 是 `internal`：它们是**解码器**，只有本库解析响应时用得上。
- * 公开它们等于把服务端的 wire 字符串写进本库的对外契约——服务端换个错误码字符串
- * 就成了客户端的破坏性变更，而那本该是纯粹的实现细节。消费方要原始串的话，
- * [LoginbaseException.Api.rawError] 已经给了。
+ * `wire` / `fromWire` 是 `internal`：公开等于把服务端 wire 串写进对外契约。
+ * 消费方要原始串用 [LoginbaseException.Api.rawError]。
  */
 enum class AuthError(internal val wire: String) {
     /** code/send：邮箱格式非法 */
@@ -68,12 +60,7 @@ enum class AuthError(internal val wire: String) {
 
 /**
  * refresh 失败的归因（`invalid_refresh_token` 的 `reason` 字段）。
- *
- * 除非实现了与服务端救活机制配合的重试，**均应视为登录态终结、引导重新登录**。
- * 服务端对丢回执（客户端没存住新 token 就断了）有救活判定，所以客户端的
- * 单飞 refresh 纪律很重要——并发刷新会消耗救活配额（1h/3 次护栏）。
- *
- * `wire` / `fromWire` 为何是 `internal`：同 [AuthError]。
+ * 均应视为登录态终结、引导重新登录。`wire` / `fromWire` 的 `internal` 同 [AuthError]。
  */
 enum class RefreshFailure(internal val wire: String) {
     /** 请求体缺 refreshToken */

@@ -19,12 +19,9 @@ import wang.harlon.loginbase.OAuthProvider
 import wang.harlon.loginbase.oauthFailureReason
 
 /**
- * 管理页（design：oauth-browser 方案 §3 / §6.4）：`signIn()/link()` 启动它，它压在
- * 浏览器页下面当锚点——开浏览器、收结果（转发 intent / onResume 判取消）、决定去向、
- * 投递。判定逻辑全在 [OAuthFlowController]（纯类，可 JVM 单测），本类只是执行者。
- *
- * 透明 + 不 exported + singleTask，姿态与两家参考实现逐字一致；singleTask 只收库内
- * 转发的 intent，不接浏览器的外部 intent（那是中转页的活）。
+ * 管理页：`signIn()/link()` 启动它，压在浏览器页下面当锚点——开浏览器、收结果、
+ * 判取消、决定去向、投递。判定全在 [OAuthFlowController]，本类只是执行者。
+ * 透明 + 不 exported + singleTask（只收库内转发，不接浏览器外部 intent）。
  */
 @OptIn(LoginbaseInternalApi::class)
 internal class LoginbaseAuthActivity : ComponentActivity() {
@@ -32,10 +29,8 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
     private lateinit var controller: OAuthFlowController
 
     /**
-     * Auth Tab 的结果通道（三级链第一级）：浏览器在 Tab 内捕获回跳、经 ActivityResult
-     * 直接回到这里——不经 Intent、不经中转页，没有被其他 App 劫持的暴露面；取消是
-     * 确定的结果码。属性初始化器时机 = 构造期，满足「STARTED 之前注册」的要求
-     * （Auth0 的 AuthenticationActivity 同款写法）。
+     * Auth Tab 的结果通道：回跳在 Tab 内被捕获、经 ActivityResult 直达这里，不经
+     * Intent 与中转页。属性初始化器 = 构造期注册，满足「STARTED 之前」的要求。
      */
     private val authTabLauncher = AuthTabIntent.registerActivityResultLauncher(this) { result ->
         when (val action = mapAuthTabResult(result.resultCode, result.resultUri?.toString())) {
@@ -73,8 +68,7 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Auth Tab 的结果回调先于 onResume 送达并已 finish；不挡掉的话，下面的状态机
-        // 会把「无 data 的 resume」误判成取消、投递一份多余的 Cancelled（Auth0 同款守卫）
+        // Auth Tab 的结果回调先于 onResume 且已 finish；不挡会把这次 resume 误判成取消
         if (isFinishing) return
         when (val action = controller.onResume(
             hasLaunchRequest = intent?.hasExtra(EXTRA_MODE) == true,
@@ -94,14 +88,13 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
     }
 
     /**
-     * 回跳送达（design §5.5 的两条路径）：
-     * - App 活着：交给静态槽里的在途 [AuthClient]，`finish()` 原地露出发起页
-     * - 进程被回收（槽空）：停泊 URL → 起 launcher → App 冷启动时 `restore()` 排空
+     * 回跳送达：App 活着交给静态槽里的 [AuthClient]、finish 原地露出发起页；
+     * 进程被回收（槽空）则停泊 URL → 起 launcher，冷启动时 `restore()` 排空。
      */
     private fun deliver(url: String) {
         val client = OAuthFlowRuntime.activeClient
         if (client != null) {
-            // 进程级 scope：投递要在本页 finish 之后继续跑完（exchangeOtc 是网络往返）
+            // 进程级 scope：投递要在本页 finish 后继续跑完（exchangeOtc 是网络往返）
             OAuthFlowRuntime.scope.launch { client.handleOAuthCallback(url) }
         } else {
             LoginbaseModuleBridge.parkOAuthCallback(url)
@@ -111,8 +104,7 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
     }
 
     private fun launchBrowser() {
-        // 只有 signIn()/link() 刚启动本页这一条路能走到这里，槽必然有值；
-        // 防御空值以防万一（如极端的进程重建时序），静默收场
+        // 只有 signIn()/link() 刚启动本页才走到这里，槽必然有值；空值属防御，静默收场
         val client = OAuthFlowRuntime.activeClient ?: run { finish(); return }
         val provider = OAuthProvider(intent.getStringExtra(EXTRA_PROVIDER) ?: run { finish(); return })
         val redirect = intent.getStringExtra(EXTRA_REDIRECT) ?: run { finish(); return }
@@ -120,8 +112,7 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
         when (intent.getStringExtra(EXTRA_MODE)) {
             MODE_SIGN_IN -> openBrowser(client, client.signInUrl(provider, redirect), redirect)
             MODE_LINK -> OAuthFlowRuntime.scope.launch {
-                // link 的授权 URL 要先带 Bearer POST 换取（浏览器导航带不了鉴权头），
-                // 这次往返里用户停在透明页上
+                // link 的授权 URL 要先带 Bearer POST 换取，这次往返里用户停在透明页上
                 val url = try {
                     client.linkUrl(provider, redirect)
                 } catch (e: CancellationException) {
@@ -142,7 +133,7 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
         }
     }
 
-    /** 三级回退链：Auth Tab（Chrome 137+）→ Custom Tab → 系统浏览器（§11 差异 #9） */
+    /** 三级回退链：Auth Tab → Custom Tab → 系统浏览器，按可用性回退 */
     private fun openBrowser(client: AuthClient, url: String, redirect: String) {
         val uri = Uri.parse(url)
         try {
@@ -158,8 +149,7 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
             when (tier) {
                 BrowserTier.AUTH_TAB -> AuthTabIntent.Builder().build()
                     .apply { intent.setPackage(cctPackage) }
-                    // 第三参是回跳 scheme：浏览器据此在 Tab 内截住回跳、经 launcher 送回。
-                    // redirect 由 redirectUri()/自检把关过形态，scheme 缺失属防御不可达
+                    // 第三参是回跳 scheme，浏览器据此在 Tab 内截住回跳；缺 scheme 属防御不可达
                     .launch(authTabLauncher, uri, requireNotNull(Uri.parse(redirect).scheme))
                 BrowserTier.CUSTOM_TAB -> CustomTabsIntent.Builder().build()
                     .apply { intent.setPackage(cctPackage) } // 锁定探测到的 provider，防被 App Links 截走
@@ -167,7 +157,7 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
                 BrowserTier.SYSTEM_BROWSER -> startActivity(Intent(Intent.ACTION_VIEW, uri))
             }
         } catch (e: ActivityNotFoundException) {
-            // 设备上一个能开 http(s) 的应用都没有——极罕见，但必须给出结果而不是挂死
+            // 设备上一个能开 http(s) 的应用都没有——必须给出结果而不是挂死
             OAuthFlowRuntime.scope.launch {
                 client.publishOAuthOutcome(OAuthOutcome.Failed("no_browser"))
             }

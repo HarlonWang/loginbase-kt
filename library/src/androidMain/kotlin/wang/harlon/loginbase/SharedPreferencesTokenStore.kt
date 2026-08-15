@@ -7,14 +7,9 @@ import kotlinx.coroutines.withContext
 /**
  * Android 令牌存储：App 私有目录下的 SharedPreferences。
  *
- * **用 `commit()` 而非 `apply()`**——这是与服务端救活机制配套的关键，不是性能疏忽：
- * `apply()` 只把改动写进内存并异步落盘，进程在落盘前被杀就会丢掉刚轮换到的令牌，
- * 下次拿旧令牌去刷即触发服务端的丢回执救活（1h/3 次护栏，反复触发会撤销整条会话链）。
- * 令牌读写是两个小字符串、每小时至多几次，同步提交的代价可以忽略。
- *
- * 未做加密：与 Logto SDK 时代的存储强度一致（App 私有目录，非 root 不可读）。
- * `androidx.security` 的 EncryptedSharedPreferences 已被 Google 废弃，为此引依赖
- * 不划算；确有需要的 App 自己实现 [TokenStore] 即可。
+ * **用 `commit()` 而非 `apply()`**——[TokenStore] 的同步落盘硬要求：`apply()` 异步落盘，
+ * 进程被杀会丢掉刚轮换的令牌。读写是两个小字符串，同步代价可忽略。
+ * 未做加密（私有目录，非 root 不可读）；有需要的 App 自行实现 [TokenStore]。
  */
 class SharedPreferencesTokenStore(
     context: Context,
