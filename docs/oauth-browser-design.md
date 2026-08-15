@@ -1,10 +1,12 @@
-# 设计方案：社交登录的浏览器环节收进库内（Auth Tab + intent-filter 双通路）
+# 设计方案：社交登录的浏览器环节收进库内（三级回退链 + 库内双 Activity）
 
-> 状态：**校准完成（#1–#9 全部已对齐），待统一重写正文**。对应 `docs/todo.md` 第 26 条。
+> 状态：**设计定稿**——正文已按第 11 节的校准结论（差异 #1–#9）统一重写。
+> 对应 `docs/todo.md` 第 26 条。落地前须完成第 8 节的三项真机 spike。
 >
-> ⚠️ **正文第 5 节起的部分内容已被第 11 节的校准结论推翻，以第 11 节为准。**
+> 第 11 节保留为**校准记录**（取证过程、被推翻的初裁、引证更正），回答
+> 「当初为什么这么定」；正文与第 11 节冲突时说明重写有误，应报修。
 >
-> 目标读者：维护者。决策背景见本文第 1 节，落地前必须先做第 8 节的 spike。
+> 目标读者：维护者。决策背景见第 1 节。
 
 ## 1. 为什么做
 
@@ -12,13 +14,14 @@
 现在库的做法是 `signInUrl()` 返回一个字符串、在注释里写「不要用 WebView」——**规范要求被
 降级成了一句劝告**，调用方把它塞进 WebView 库既不知道也拦不住。
 
-业界参考实现无一例外自己拥有这一步：AppAuth-Android（OpenID 基金会参考实现）、
-Auth0.Android 的 `WebAuthProvider`、以及同类 KMP 库 supabase-kt 的 `Auth` 模块
-（`androidMain` 里 `api(libs.androidx.browser)`）。
+业界参考实现无一例外自己拥有这一步：AppAuth-Android（OpenID 基金会参考实现，作者即
+RFC 8252 作者）、Auth0.Android 的 `WebAuthProvider`、以及同类 KMP 库 supabase-kt 的
+`Auth` 模块（`androidMain` 里 `api(libs.androidx.browser)`）。
 
 顺带解决今天接入体验上最扎眼的一块：接入方要自己写 manifest intent-filter、自己从
 deep link 抠参数，而且**登录与绑定的回跳参数是两套**（`otc` vs `linked=<provider>` /
-`error=<reason>`），要自己分辨。
+`error=<reason>`），要自己分辨；用户关掉浏览器的「取消」还得自己写约 20 行生命周期
+启发式去兜（消费方 TrendingAI 实测踩过「面板永远转圈」）。
 
 ## 2. 目标与非目标
 
@@ -27,7 +30,8 @@ deep link 抠参数，而且**登录与绑定的回跳参数是两套**（`otc` 
 - 授权页由库在合规的外部 user-agent 里打开，调用方拿不到「塞进 WebView」的机会
 - 回跳的捕获与解析归库，登录/绑定两套参数的差异对调用方不可见
 - **进程在浏览器停留期间被系统回收后，流程仍能走完**
-- 用户取消能被识别（尽最大努力，见第 7 节限制）
+- 用户取消能被识别：Auth Tab 与 Custom Tab 通路是确定信号，系统浏览器兜底是
+  「迟到的确定信号」（见 §6.2）
 
 **非目标**
 
@@ -36,27 +40,36 @@ deep link 抠参数，而且**登录与绑定的回跳参数是两套**（`otc` 
 - 不接管 PKCE / state / code 交换——本库的 OAuth 是**服务端流**，客户端只负责「开页面」
   和「拿 otc」，这些环节本来就不在客户端
 
-## 3. 核心设计：两条通路汇聚到同一个入口
+## 3. 核心设计：三级回退链，所有结果汇进一个漏斗
 
-这是整个方案的支点。
+库内两个 Activity 分工（消费方对两者都无感知）：
+
+| | 中转页 `LoginbaseCallbackActivity` | 管理页 `LoginbaseAuthActivity` |
+|---|---|---|
+| 谁创建 | 系统（回跳 intent 触发） | 库（`signIn()/link()` 启动） |
+| 出生时机与位置 | 流程结尾，浏览器页之**上** | 流程开头，浏览器页之**下**（锚点） |
+| manifest 姿态 | `standard`、`exported`、intent-filter、`excludeFromRecents` | `singleTask`、**不** exported、透明 |
+| 职责 | 收回跳 intent，带 `CLEAR_TOP or SINGLE_TOP` 转发给管理页，finish（~15 行，无状态） | 按三级链开浏览器、收结果、判取消、决定去向、投递 |
 
 ```
-                 ┌─ Auth Tab 捕获回跳，callback 直接回到进程内 ─┐
-授权页在外部打开 ─┤                                              ├─→ handleOAuthCallback(url)
-                 └─ 回退：系统浏览器 + intent-filter 拉起 Activity ┘
+signIn() ──→ 管理页（透明，压进栈里当锚点）
+               │ 按可用性选一级：
+               ├─ Auth Tab（Chrome 137+）→ 回跳被浏览器捕获 → ActivityResult 回调 ─┐
+               ├─ Custom Tab             → 回跳 → 中转页 → CLEAR_TOP 转发 ────────┤
+               └─ 系统浏览器              → 回跳 → 中转页 → CLEAR_TOP 转发 ────────┤
+                                                                                ↓
+                                        管理页统一投递 → handleOAuthCallback(url)
+                                                                                ↓
+                                        oauthResults（消费方唯一的结果通道）
 ```
 
-两条通路的差别**只在「结果怎么回到进程里」**。回来之后要做的事完全一样：解析 URL →
-判断是登录还是绑定 → 登录则 `exchangeOtc` → 发结果。
+三条通路的差别**只在「结果怎么回到管理页」**。回来之后只有一份逻辑：解析 URL →
+判断登录还是绑定 → 登录则 `exchangeOtc` → 发到 `oauthResults`。
 
-所以库在 `commonMain` 暴露**一个**入口：
-
-```kotlin
-suspend fun AuthClient.handleOAuthCallback(url: String): OAuthOutcome
-```
-
-Auth Tab 通路由库在 callback 里调用它；回退通路由库自己的中转页（§5.3）调用它。
-**两条通路之后的所有逻辑只有一份实现，且消费方都不用参与。**
+为什么必须有管理页、不能只留中转页：清除浏览器页（CLEAR_TOP）需要一个**事先压在它
+下面**的锚点；取消检测需要一个「用户放弃时必然 resume」的观察者。中转页出生在流程
+结尾、位置在浏览器页之上，两件事都干不了；合成一个 Activity 则必须把 singleTask 暴露
+给浏览器的外部 intent、并把有状态组件放上 exported 面（论证见 §11 差异 #3）。
 
 ## 4. 不需要持久化「我在等什么」
 
@@ -70,8 +83,12 @@ Auth Tab 通路由库在 callback 里调用它；回退通路由库自己的中�
 | `linked=<provider>` | 绑定成功 |
 | `error=<reason>` | 绑定失败（登录失败也走这个） |
 
-所以**不需要任何 pending 状态持久化**，也不需要第二个存储。这条让方案的复杂度掉了一大截——
-没有「状态写坏了怎么办」「什么时候过期清理」这类问题。
+所以**不需要任何 pending 状态持久化**，也不需要第二个存储。这条让方案的复杂度掉了
+一大截——没有「状态写坏了怎么办」「什么时候过期清理」这类问题。
+
+校准还证明它兑现了一笔额外红利：AppAuth/Auth0 在 Android 14 上的 #977 断裂（管理页
+被系统重建后配不上存储的 pending request）对本库**不成立**——回跳 URL 自带全部信息，
+重建的管理页照常投递（§6.4）。
 
 ## 5. API 设计
 
@@ -89,25 +106,36 @@ sealed interface OAuthOutcome {
     /** 服务端在回跳里给了 error，典型如 `already_linked` */
     data class Failed(val reason: String) : OAuthOutcome
 
-    /** 用户主动放弃（关掉了授权页）。仅 Auth Tab 通路可靠，见「已知限制」 */
+    /** 用户主动放弃。三条通路都能给出，系统浏览器通路迟到（见 §6.2） */
     data object Cancelled : OAuthOutcome
 
-    /** 回跳 URL 不是本库认得的形状——大概率是接入配置错了，该报给开发者 */
+    /** 回跳 URL 不是本库认得的形状（含畸形 percent 编码）——大概率是接入配置错了
+        或外部塞了异常输入，该报给开发者 */
     data class Unrecognized(val url: String) : OAuthOutcome
 }
 
 /**
- * 处理一次 OAuth 回跳。**两条通路的唯一汇合点。**
+ * 处理一次 OAuth 回跳。**所有通路的唯一汇合点。**
  *
- * 幂等：同一个 otc 重复送入只会被消费一次（见 §6.1）。
+ * 幂等：同一 otc 只兑换一次，重复送入返回缓存结果、不打服务端（§6.1）。
+ * 结果除返回外**必发一份到 [oauthResults]**——UI 只看后者；返回值给直接调用方
+ * （自定义流程、iOS 占位、测试）。
+ * 解析用 ktor 的 `parseQueryString()`（既有依赖）；任何畸形输入不抛异常，
+ * 收编为 [OAuthOutcome.Unrecognized]。
  */
 suspend fun handleOAuthCallback(url: String): OAuthOutcome
 
 /**
- * 结果广播。进程被回收后冷启动的场景里，发起 [signIn] 的那个协程已经不存在了，
- * 结果只能从这里拿。`replay = 1` 兜住「回调先于订阅到达」。
+ * 消费方唯一的结果通道（`replay = 1`）。
+ *
+ * replay 只为兜「投递早于订阅」的时序（进程回收后冷启动，发起协程已不存在），
+ * **不是历史记录**：处理完结果调 [consumeOauthResult] 清掉，防陈旧结果重放给
+ * 后来的订阅者（§6.1）。
  */
 val oauthResults: SharedFlow<OAuthOutcome>
+
+/** 声明结果已处理，清 replay 缓存。 */
+fun consumeOauthResult()
 ```
 
 `signInUrl` / `linkUrl` **保留但降级**：仍然公开（自定义流程、非 Android 平台需要），
@@ -117,40 +145,36 @@ val oauthResults: SharedFlow<OAuthOutcome>
 
 ```kotlin
 /**
- * 在合规的外部 user-agent 里完成一次社交登录，挂起到有结果为止。
+ * 发起社交登录。**不挂起**——启动管理页即返回，结果从 [oauthResults] 送达。
+ * （挂起返回值在屏幕旋转、进程回收下必然中断，是引诱消费方漏写 flow 路径的
+ * 陷阱，见 §11 差异 #5。）
  *
- * 不需要传 redirect——它由 applicationId 推导（见 §5.3），与 manifest 里声明的
- * scheme 同源，不可能不一致。
+ * 浏览器按三级回退链选择：Auth Tab（Chrome 137+，回跳不经 Intent、无劫持暴露面）
+ * → Custom Tab（任何实现 CustomTabsService 的浏览器）→ 系统浏览器。
  *
- * 优先 Auth Tab（Chrome 137+）：回跳由浏览器直接 callback 回来，不经过 Intent，
- * 因此没有 Intent 被其他 App 劫持的暴露面。不可用时回退到系统浏览器 + 中转页，
- * 结果同样从这里返回；进程若被回收，则从 [oauthResults] 送达。
+ * redirect 由 manifest 的 meta-data 读回（§5.3），与 intent-filter 同源，不可能漂移。
  */
-suspend fun AuthClient.signIn(activity: ComponentActivity, provider: OAuthProvider): OAuthOutcome
+fun AuthClient.signIn(activity: Activity, provider: OAuthProvider)
 
-suspend fun AuthClient.link(activity: ComponentActivity, provider: OAuthProvider): OAuthOutcome
+fun AuthClient.link(activity: Activity, provider: OAuthProvider)
 
 /** 需要自定义 redirect 的重载（自建 scheme、https app-link 等）。 */
-suspend fun AuthClient.signIn(
-    activity: ComponentActivity,
-    provider: OAuthProvider,
-    redirect: String,
-): OAuthOutcome
+fun AuthClient.signIn(activity: Activity, provider: OAuthProvider, redirect: String)
 ```
 
-### 5.3 scheme 与中转页：消费方零配置
+### 5.3 scheme、redirect 与两个 Activity：每变体一行配置
 
 #### scheme 是什么
 
-`cn.trendingai://loginbase/callback` 里的 `cn.trendingai` 就是 scheme，地位等同 `https`。
+`cn.trendingai:/loginbase/callback` 里的 `cn.trendingai` 就是 scheme，地位等同 `https`。
 区别是浏览器不认识它，会问系统「谁认领了这个 scheme」——**它是浏览器把控制权还给 App
 的唯一线索**：
 
 ```
-5. 服务端 302 → cn.trendingai://loginbase/callback?otc=abc123
+5. 服务端 302 → cn.trendingai:/loginbase/callback?otc=abc123
 6. 浏览器：这个 scheme 我不认识 → 问 Android
 7. Android：翻所有 App 的 manifest，找谁声明了 <data android:scheme="cn.trendingai" />
-8. 拉起那个 Activity，intent.data = 上面那个 URL
+8. 拉起那个 Activity（本库的中转页），intent.data = 上面那个 URL
 ```
 
 同一个 scheme 必须在**三处**一致，而且写错的地方和报错的地方对不上，很难查：
@@ -158,176 +182,245 @@ suspend fun AuthClient.signIn(
 | 出现在哪 | 谁负责 | 写错的症状 |
 |---|---|---|
 | 服务端 redirect 白名单 | 服务端 App 配置 | 授权还没开始就被拒（`invalid_redirect`） |
-| App 的 manifest | Android 构建 | 第 7 步没人接，**用户授权完卡在打不开的页面** |
-| 运行时传给 `signInUrl` 的 `redirect` | 代码 | 表现为上面两种之一 |
+| App 的 manifest（经 placeholder） | Android 构建 | 第 7 步没人接，**用户授权完卡在打不开的页面** |
+| 运行时拼 redirect 用的值（经 meta-data 读回） | 库 | 同上两种之一 |
 
-#### 用 `${applicationId}` 把后两处收进库里
+#### 用 placeholder + `<meta-data>` 收进库里
 
-中转页由库提供并在**库自己的 manifest** 里声明（AppAuth 的 `RedirectUriReceiverActivity`、
-Auth0 的 `RedirectActivity` 同做法），scheme 用 AGP 的内置占位符：
+两个 Activity 都声明在**库自己的 manifest** 里（AppAuth、Auth0 同做法），消费方一行
+XML 都不写：
 
 ```xml
+<!-- 中转页：对外的哑门铃。standard——singleTask 收浏览器外部 intent 是
+     onNewIntent 双路径与任务分裂的坑源（§11 差异 #2） -->
 <activity
     android:name=".LoginbaseCallbackActivity"
     android:exported="true"
-    android:launchMode="singleTask"
+    android:excludeFromRecents="true"
     android:theme="@android:style/Theme.Translucent.NoTitleBar">
     <intent-filter>
         <action android:name="android.intent.action.VIEW" />
         <category android:name="android.intent.category.DEFAULT" />
         <category android:name="android.intent.category.BROWSABLE" />
-        <data android:scheme="${applicationId}" />
+        <data android:scheme="${loginbaseRedirectScheme}" />
     </intent-filter>
 </activity>
+
+<!-- 管理页：库内锚点，外界摸不到。姿态与 AppAuth/Auth0 逐字一致 -->
+<activity
+    android:name=".LoginbaseAuthActivity"
+    android:exported="false"
+    android:launchMode="singleTask"
+    android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+<!-- 同一占位符再喂一份给运行时（经 PackageManager 读回），物理上不可能漂移。
+     这是消费方 buildConfigField 双喂在库场景下的等价物——库读不到消费方的 BuildConfig -->
+<meta-data
+    android:name="loginbase.redirectScheme"
+    android:value="${loginbaseRedirectScheme}" />
 ```
 
-合并进 TrendingAI 时自动变成 `cn.trendingai`。而运行时 `activity.packageName` 返回的**就是**
-applicationId，所以 `signIn()` 能自己拼出同一个 redirect。
+消费方 `build.gradle.kts`，每变体一行：
 
-**两处同源，不可能不一致；消费方一个字都不用写。**
+```kotlin
+defaultConfig {
+    manifestPlaceholders["loginbaseRedirectScheme"] = "cn.trendingai"
+}
+buildTypes.getByName("debug") {
+    manifestPlaceholders["loginbaseRedirectScheme"] = "cn.trendingai.debug"
+}
+```
 
-剩下的服务端白名单躲不掉——那是安全控制，必须服务端显式允许。但它的值现在是**可预测的**：
-就是 applicationId。
+scheme 取**自有域名反写**（RFC 8252 §7.1 的 MUST）。不能自动用 applicationId 推导——
+反写未必对应真实域名（校准实证：TrendingAI 的 applicationId `whl.trending.ai` 反写
+不是任何域名，他们实际用 `cn.trendingai` ← trendingai.cn）；更根本的是服务端白名单
+永远要人工配，自动推导只是把「两处人工必须一致」变成「一处人工 + 一处自动必须碰巧
+一致」，改包名就悄悄漂移（§11 差异 #1）。
 
-> `${applicationId}` 恰好也是 RFC 8252 §7.1 推荐的形态：「用自己控制的域名反写作为
-> private-use scheme」。
+忘配 placeholder → **构建期直接失败**。这是选 placeholder 而非字符串资源的核心理由：
+字符串资源忘配是静默回落默认值，症状「用户授权完卡在浏览器」离病因「少写一行 gradle」
+极远；构建失败花机器时间换人的排查时间，值。
 
-#### 顺带做对了一件容易做错的事
+debug/release 用**独立 scheme** 隔离（而非 path）：Android 的 `<data>` 规则是「没有
+host 时所有 path 属性都被忽略」，无 host 形态下 scheme 是唯一过滤维度；两个变体装同一台
+机器物理隔离，不会弹「用哪个应用打开」。代价：服务端白名单两条。
 
-Android 项目常给 debug 变体加后缀（`applicationIdSuffix = ".debug"`），于是 debug 包的
-scheme 自动变成 `cn.trendingai.debug`。
+#### redirect 形态：无 host 单斜杠
 
-**若写死一个固定 scheme**，debug 与 release 同时装在一台机器上时两个都声明
-`cn.trendingai`，第 7 步 Android 会弹**「用哪个应用打开」的选择器**——用户莫名其妙，
-开发者也很难联想到是 scheme 撞了。
+库默认 redirect 为 `<scheme>:/loginbase/callback`（单斜杠，无 host）——RFC 8252 §7.1
+的示例形态。host 位在 private-use scheme 里**没有所有权语义**（纯字符串，任何截胡 App
+照抄即可），带上它只会让「几个斜杠」成为必须记对的细节：`scheme://x/cb` 与
+`scheme:/x/cb` 在服务端 `new URL()` 眼里 host 一个是 `"x"` 一个是空串，精确匹配直接
+失败，症状是授权未开始就 400 `invalid_redirect`，而两个字符串肉眼几乎相同（§11 差异 #4）。
 
-代价：服务端白名单要配两条（`cn.trendingai://…` 与 `cn.trendingai.debug://…`）。
+#### 跨仓库不变式的感知（四层）
+
+跨仓库的「三处一致」靠文档一定会腐化，主要手段是**错的时候尽早、就地、带修法报错**：
+
+1. **构建期**：placeholder 缺失 → 构建失败
+2. **发起前自检**（~15 行，最高价值）：拉起浏览器**之前**检查 meta-data 是否存在、
+   `Intent(ACTION_VIEW, redirect)` 能否被解析、解析到的是否是本 App。三种失败分别对应
+   「没给 placeholder」「scheme 写错或变体没配」「**别的 App 抢了同一个 scheme**」——
+   最后一条顺带是安全信号
+3. **错误消息带上「另一半」**：客户端报错时必须提醒服务端白名单要填同一个值，并说明
+   「两边不一致时浏览器停在 `invalid_redirect`，App 侧收不到任何信号」
+4. **让「该填给服务端什么」随手可查**：`Loginbase.redirectUri(context)` 一行返回
+   `cn.trendingai:/loginbase/callback`；debug 构建（`FLAG_DEBUGGABLE`）首次发起时自动打印
+
+README 需要一个独立小节，含「三处一致」表与**症状 → 原因**映射表（含「invalid_redirect
+且字符串肉眼相同 → 数斜杠」）。
+
+**明确不做**：debug 构建预检服务端（发起前探一次 start 端点）。浏览器里的
+`invalid_redirect` 本身并不隐蔽（地址栏能看到发出去的 redirect 值），不值得每次登录多
+一次请求 + 一条只在 debug 存在的代码路径。
 
 ### 5.4 接线成本对比
 
-| | 今天 | 中转页 + `manifestPlaceholders` | 中转页 + `${applicationId}` |
-|---|---|---|---|
-| manifest | 手写 intent-filter | — | — |
-| build.gradle | — | 一行 placeholder | — |
-| 生命周期接线 | `onCreate` + `onNewIntent` | — | — |
-| 注册 `AuthClient` | — | 一行 | — |
-| 解析回跳参数 | 自己写 | — | — |
-| 分辨登录/绑定 | 自己写 | — | — |
-| 调 `exchangeOtc` | 自己写 | — | — |
-| **消费方新增代码** | **6 项** | **2 行** | **0** |
+| | 今天（消费方手写，TrendingAI 实测） | 本方案 |
+|---|---|---|
+| manifest | 手写 intent-filter | — |
+| build.gradle | scheme 常量 + `buildConfigField` 双喂 | 每变体一行 placeholder |
+| 生命周期接线 | `onCreate` + `onNewIntent` | — |
+| 解析回跳参数 | 手写（含 ~20 行 percent-decoder） | — |
+| 分辨登录/绑定 | 自己写 | — |
+| 调 `exchangeOtc` | 自己写 | — |
+| 取消检测 | ~20 行 `ON_RESUME` 启发式（含防竞态标志，易错） | — |
+| **消费方新增** | **7 项** | **每变体一行** |
 
 `restore()` 与观察 `oauthResults` 不计入——它们本来就在接入指南里。
 
-**消掉的那两个生命周期钩子恰恰是最易错的**：漏写 `onNewIntent` 会导致「App 在后台时授权
-回来没反应」，只在特定启动模式下复现。
+消掉的恰是最易错的两块：漏写 `onNewIntent` 导致「App 在后台时授权回来没反应」；
+取消启发式的调度竞态导致「成功被误判成取消、loading 闪断」（均为消费方实测踩过）。
 
-### 5.5 中转页引入的两个问题及解法
+### 5.5 库组件怎么找到 `AuthClient`
 
-#### 问题 1：中转页怎么找到 `AuthClient`
-
-它由系统实例化，够不到 App 的 DI 图。**把两条路径拆开看，各自都有现成的抓手**：
+管理页由库启动、中转页由系统实例化，都够不到 App 的 DI 图。**把两条路径拆开看，
+各自都有现成的抓手**：
 
 | 路径 | 谁把 URL 交给 `AuthClient` |
 |---|---|
 | **App 还活着**（多数情况） | `signIn()` 发起时把 `this` 放进库内静态槽——**发起方就是它自己，不需要外人注册** |
-| **进程被回收** | 静态槽随进程消失 → 中转页把 URL **停泊**在静态里 → 起 launcher → App 冷启动 → **`restore()` 把停泊的 URL 排空** |
+| **进程被回收** | 静态槽随进程消失 → 管理页把 URL **停泊**在静态里 → 起 launcher → App 冷启动 → **`restore()` 把停泊的 URL 排空** |
 
-`restore()` 本来就是接入指南第 3 步、本来就必须在启动时调；而中转页的 `onCreate` **必然
-早于** App 的 `restore()`（它是先被拉起的那个 Activity），时序天然成立。
-
-**所以不需要任何新的消费方动作。**
+`restore()` 本来就是接入指南第 3 步、本来就必须在启动时调；而管理页的处理**必然早于**
+App 的 `restore()`（它是先被拉起的那个 Activity），时序天然成立。
 
 > 也考虑过「`AuthClient` 构造时自动注册到静态」——否掉了：构造函数带隐式全局副作用，
 > 多实例时行为不可预测，还会干扰测试。上面的分路做法既没有这个问题，也不需要消费方参与。
 
-#### 问题 2：处理完怎么把用户送回 App
-
-用 `isTaskRoot` 区分：
-
-| 情况 | `isTaskRoot` | 动作 |
-|---|---|---|
-| App 还活着，中转页落在 App 的任务栈里 | `false` | 直接 `finish()`，露出下面原来的界面 |
-| App 已被回收，中转页是新任务的根 | `true` | 起 App 的 launcher intent（`packageManager.getLaunchIntentForPackage`），再 `finish()` |
-
-不用 AppAuth 那种「消费方提供 `PendingIntent`」——那等于把接线成本还回去。`isTaskRoot`
-是标准信号，launcher intent 库自己就能拿到。
-
-**不要用 `FLAG_ACTIVITY_CLEAR_TOP` 之类「回到首页」**：用户可能在很深的页面上发起绑定，
-清栈会把他的位置弄丢。只在任务确实不存在时才起 launcher。
+「处理完怎么把用户送回 App」不再是独立问题：App 活着时管理页 `finish()` **原地露出
+发起页**（深层页面的位置不丢）；冷启动分支起 launcher（`getLaunchIntentForPackage`）。
+不用 `REORDER_TO_FRONT`（多 Activity 消费方里会把深层页埋掉）、不用消费方提供
+`PendingIntent`（把接线成本还回去）——论证见 §11 差异 #3。
 
 ## 6. 关键机制
 
-### 6.1 幂等
+### 6.1 幂等（两层，各司其职）
 
-otc 是单次有效的。两条通路理论上不会同时送达（Auth Tab 捕获后浏览器不再发 Intent），
-但**不能依赖这个假设**——回退判定失误、用户手动点了浏览器里的链接、系统重放 Intent 都可能
-造成重复。
+**otc 层（防重复打服务端）**：otc 单次有效、兑换即销毁，而回跳 URL 的送达次数库控制
+不了（用户点浏览器历史里的链接、ROM 重放 intent、回退判定失误双送）。库在进程内记住
+最近处理过的 otc，重复送入返回上一次的结果，**不再打服务端**——否则第二次 exchange
+返回 `invalid_otc`，与「真过期」无法区分，用户刚登录成功就看到一条假失败。
 
-处理：库在进程内记住最近处理过的 otc，重复送入直接返回上一次的结果，**不再打服务端**。
+**通道层（防重复送 UI）**：`replay = 1` 的缓存会把已处理的结果重发给**任何**后来的
+订阅者（有第二个订阅页就必现，如登录后再打开绑定页收到陈年 `SignedIn`）。处理完调
+`consumeOauthResult()` 清掉。**replay 只兜「投递早于订阅」的时序，不是历史记录。**
 
-为什么不能靠服务端兜：第二次 exchange 会返回 `invalid_otc`，而那与「otc 真的过期了」
-无法区分——用户会看到一次莫名其妙的登录失败。
+两层互不覆盖：otc 去重管不到 `Linked`/`Cancelled` 的重放，consume 拦不住自己执行前的
+双送（§11 差异 #7，含时间线）。
 
-### 6.2 取消
+### 6.2 取消（分层）
 
-- **Auth Tab 通路**：浏览器关闭会通过 callback 返回一个结果码，可以映射成 `Cancelled`
-- **回退通路**：用户直接退出浏览器，App 什么都收不到，`signIn()` 会一直挂着
+| 通路 | 信号 | 性质 |
+|---|---|---|
+| Auth Tab | launcher 回调 `onCancel` | 确定，即时 |
+| Custom Tab | 管理页 `onResume` 且无 data（关闭动作直接触发 resume） | 确定，即时 |
+| 系统浏览器 | 同上，但 resume 要等**用户自行回到 App** | 确定但迟到；语义 =「用户放弃后回到了 App」 |
 
-后者由调用方的协程作用域负责（页面销毁则 scope 取消）。这是回退通路的固有限制，写进文档。
+三条全部经 `oauthResults` 投递 `Cancelled`，消费方零代码——今天消费方手写的
+`ON_RESUME` 启发式（约 20 行，还要防「成功被误判成取消」的调度竞态）整体消失：
+成功路径的 data 由 `onNewIntent` 先于 `onResume` 就位，竞态被系统的调用顺序结构性
+消掉（§11 差异 #6）。
+
+残余窄竞态只有一个：用户授权后抢在回跳送达前手动切回 App，会产生 `Cancelled` →
+`SignedIn` 的**序列**，UI 按序处理即自愈（已列入限制 #1）。
 
 ### 6.3 进程被回收
 
 ```
-App 打开授权页 → 系统回收 App → 用户完成授权 → 回跳
-  → 中转页冷启动，onCreate 拿到 intent.data
-  → 把 URL 停泊进库内静态槽（此时还没有 AuthClient 可用）
-  → isTaskRoot == true → 起 App 的 launcher intent → finish()
+App 开授权页（管理页 → 浏览器）→ 系统回收 App 进程 → 用户完成授权 → 回跳
+  → 中转页冷启动，onCreate 拿到 intent.data → 照常转发
+  → 栈里没有管理页实例 → singleTask 新建一个
+  → 管理页：有 data，但静态槽里没有在途 AuthClient → 把 URL 停泊进库内静态
+  → 起 App 的 launcher intent（getLaunchIntentForPackage）→ finish()
   → App 冷启动 → auth.restore() 顺带把停泊的 URL 排空
   → handleOAuthCallback → exchangeOtc → 落盘
   → authState 变 SignedIn（全局导航自然跳转）
   → oauthResults 发出 SignedIn
 ```
 
-发起 `signIn()` 的那个协程早已随进程消失，所以**结果必须能从 `oauthResults` 拿到**——
+发起 `signIn()` 时的 UI 早已随进程消失，所以**结果必须能从 `oauthResults` 拿到**——
 这就是它存在的理由，也是为什么 `replay = 1`（`restore()` 里的处理可能早于 UI 订阅）。
 
-**时序上中转页的 `onCreate` 必然早于 App 的 `restore()`**（它是先被拉起的那个 Activity），
-所以「停泊 → 排空」不会错过。
+### 6.4 管理页状态机（data-first，#977 免疫）
 
-### 6.4 与现有并发机制的关系
+`onResume` 状态机，**顺序即优先级**：
+
+1. `intent.data != null` → 投递（冷启动则停泊）→ 决定去向 → `finish()`
+2. 未开过浏览器（`intentLaunched` 标志，存 `savedInstanceState`）且带授权参数 →
+   置位、按三级链开浏览器
+3. 未开过浏览器且无授权参数 → 意外启动，静默 `finish()`
+4. 开过浏览器、无 data → 取消，投递 `Cancelled`，`finish()`
+
+data-first 是刻意的：Android 14 按 #977 的行为把管理页**重建而非复用**时，新实例
+`savedInstanceState` 与 extras 都是空的，但转发 intent 里有完整回跳 URL——分支 1
+照常投递。AppAuth 在同一情形流程断裂、Auth0 静默丢结果；本库免疫的根源是 §4 的
+「不持久化 pending 状态」。
+
+已知陷阱（落地时反向验证）：`onNewIntent` 里**必须 `setIntent(intent)`**，否则
+`getIntent()` 永远返回启动时的旧 intent、data 恒为 null，每次 Custom Tab 成功回跳都
+被判成取消，而单实例直跑的测试还全绿。各条裁决预记的反向验证点汇总见 §11。
+
+### 6.5 与现有并发机制的关系
 
 `handleOAuthCallback` 内部走 `exchangeOtc` → `persist`，和 `refresh` 一样受 `storeMutex`
 保护。与在途刷新、并发登出的竞态由已有机制覆盖，不引入新的锁。
 
 ## 7. 已知限制（必须写进 README）
 
-1. **回退通路识别不了「用户取消」**——没有任何信号会回到 App
+1. **系统浏览器兜底通路的取消信号迟到**——要等用户自行回到 App 才能判定；且极端时序
+   下（授权后抢在回跳送达前切回）可能出现 `Cancelled` → `SignedIn` 序列，UI 按序处理
+   即自愈
 2. **服务端 redirect 白名单仍要人工配**，且 debug/release 变体各一条
-   （`<applicationId>://loginbase/callback`）。这是安全控制，不能由客户端决定
+   （`<scheme>:/loginbase/callback`）。这是安全控制，不能由客户端决定；该填什么用
+   `Loginbase.redirectUri(context)` 随手可查
 3. **只有 Android**。iOS 转正前，那边仍是 `signInUrl()` + 自己开浏览器
 4. `link` 流程的失败原因由服务端 App 定义（`already_linked` 是典型值但不是协议保证），
    库只能原样透传给 `Failed.reason`
 5. **自定义 scheme 谁都能声明**——别的 App 装上去声明同一个 scheme 就能截胡回跳。这是
    RFC 8252 明确承认的固有弱点，也是优先走 Auth Tab（不发 Intent）的理由之一；另外 otc
-   60 秒单次有效，即便被截也只有一次窗口
-6. 不用社交登录的消费方也会被合并进一个 `LoginbaseCallbackActivity`。因为用的是
-   `${applicationId}` 而非自定义占位符，**不会导致构建失败**，只是多一个不会被触发的
-   Activity；介意的可以在自己的 manifest 里 `tools:node="remove"`
+   60 秒单次有效，即便被截也只有一次窗口。发起前自检（§5.3 第 2 层）能就地报出抢注
+6. 不用社交登录的消费方也会被合并进两个 Activity，且 **placeholder 缺失会构建失败**——
+   需要给一行任意占位值，或用 `tools:node="remove"` 移除。⚠️ 这一代价在校准中未显式
+   裁决（差异 #1 只讨论了使用者视角），具体绕法与「是否值得把浏览器环节拆独立
+   artifact」**待裁**，落地 2a 前需回答
 
-## 8. 落地前必须先 spike 的四件事
+## 8. 落地前必须先 spike 的三件事
 
-**这些的结论会改变实现，未验证前不要动手。**
+**这些的结论会改变实现细节（不改架构），未验证前不要动手。**
 
 | # | 要验证什么 | 若答案不利 |
 |---|---|---|
-| 1 | **AGP 允不允许库的 manifest 用 `${applicationId}`**。历史上它在 `android:authorities` 之类属性上有过限制（库 manifest 也会被单独处理），在 `<data android:scheme>` 上行不行**未验证** | 退回 `manifestPlaceholders["loginbaseScheme"]` 一行配置。方案不受影响，只是消费方从 0 行变 1 行，且要自己处理 debug/release 变体的 scheme 隔离 |
-| 2 | **`ActivityResultLauncher` 能否在 suspend 函数里临时注册**。AndroidX 要求在 `STARTED` 之前 `registerForActivityResult`；`activityResultRegistry.register(key, ...)` 理论上允许任意时刻注册并手动反注册，但**进程死亡后 registry 的 pending 恢复行为我没验证过** | `signIn()` 改成接收消费方在 `onCreate` 注册好的 launcher——接入体验退一步 |
-| 3 | **中转页 `isTaskRoot` + 起 launcher 的实际行为**：App 被回收后回跳，用户看到的是不是正常的冷启动，返回键行为对不对 | 可能要调 `launchMode` / `taskAffinity`，属实现细节，不影响架构 |
-| 4 | **Auth Tab 的 callback 能否扛住进程死亡**，以及回退判定的准确 API（可用性怎么查） | **风险已被中转页吃掉**：扛不住就由中转页接住，走 §6.3 的时序。这项现在只影响「多数情况下走哪条通路」，**不影响架构**，可以后验 |
+| 1 | **管理页冷启动分支的真机行为**：进程被回收后回跳 → 停泊 → 起 launcher，用户看到的是不是正常冷启动，返回键行为对不对 | 调起 launcher 的细节（flags 等），不影响架构 |
+| 2 | **Android 14+ 开「不保留活动」验证重建路径**：#977 场景下 data-first 状态机真实走通 | 补管理页的状态恢复逻辑，架构不变 |
+| 3 | **Auth Tab 的 callback 能否扛住进程死亡**，以及可用性检测的准确 API | **风险已被中转页/管理页兜住**：扛不住就落到 §6.3 的时序。只影响「多数情况下走哪级链」，不影响架构 |
 
-前三项建议在同一个 spike App 里一次验完——它们都要真机跑一遍完整回跳。
+原「AGP 允不允许库 manifest 用 `${applicationId}`」随差异 #1 撤回该方案而消失——
+placeholder 是 AppAuth/Auth0 在海量设备上验证过的同款机制，无 AGP 未知数。
+原「`ActivityResultLauncher` 能否在 suspend 里注册」随差异 #3 消失——launcher 注册在
+管理页自己的 `onCreate`，与消费方 Activity 无关。
 
-文中标注 API 形态时刻意没写死具体签名：Auth Tab 是较新的 API，未实际编译过，以实测为准。
+三项建议在同一个 spike App 里一次验完。文中 API 形态刻意没写死具体签名，以实测为准。
 
 ## 9. 依赖红线怎么处理
 
@@ -342,19 +435,21 @@ App 打开授权页 → 系统回收 App → 用户完成授权 → 回跳
 修订后的表述：**common 层仍是那三个；平台层只允许该平台的一等公民 API（AndroidX、
 Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 
+（回跳解析用的 ktor `parseQueryString` 不涉红线：`ktor-client-core` 本就是三依赖之一，
+`io.ktor.http` 随它在 classpath 上，且解码是纯内部实现、不进公开契约。）
+
 ## 10. 分期
 
 | 期 | 内容 | 产出 |
 |---|---|---|
-| **0** | 第 8 节的三个 spike | 一份结论，决定 1 期的形态 |
-| **1** | `commonMain`：`OAuthOutcome`、`handleOAuthCallback`、`oauthResults` | 零新依赖，可单独测（喂 URL 断言结果），**先于任何 Android 代码落地** |
-| **2a** | `androidMain`：中转页 + 系统浏览器 + `${applicationId}` scheme | 引入 `androidx.browser`，红线同步修订。**这一步就能独立跑通完整流程**，且不依赖任何 Auth Tab 的未知数 |
-| **2b** | Auth Tab 优先通路 | 纯优化：少一次任务切换、少一个 Intent 暴露面。做不成也不影响可用性 |
-| **3** | README 接入指南更新 + 限制说明 | |
+| **0** | 第 8 节的三项 spike | 一份结论，决定 1/2 期的实现细节 |
+| **1** | `commonMain`：`OAuthOutcome`、`handleOAuthCallback`（含 otc 幂等 + ktor 解析）、`oauthResults` + `consumeOauthResult` | 零新依赖，纯单测（喂 URL 断言结果；幂等与 consume 按预记的反向验证点先破坏再恢复），**先于任何 Android 代码落地** |
+| **2a** | `androidMain` 完整拓扑：中转页 + 管理页 + Custom Tab / 系统浏览器回退 + 取消分层 + placeholder/meta-data | 引入 `androidx.browser`，红线同步修订。**这一步即可独立跑通除 Auth Tab 外的全部路径**（§11 差异 #3 的七条推演） |
+| **2b** | Auth Tab 优先级（管理页内 `ActivityResultLauncher`） | 纯增强：少一次任务切换、少一个 Intent 暴露面。做不成不影响可用性 |
+| **3** | README 接入指南更新 + 限制说明 + 症状→原因映射表 | |
 
-**1 期能独立交付且独立有价值**：即使 2 期不做，接入方自己开浏览器时也已经不用再解析参数、
-不用分辨流程了。而它零新依赖、可完整单测——先做它，风险最低。
-
+**1 期能独立交付且独立有价值**：即使 2 期不做，接入方自己开浏览器时也已经不用再解析
+参数、不用分辨流程了。而它零新依赖、可完整单测——先做它，风险最低。
 
 ---
 
