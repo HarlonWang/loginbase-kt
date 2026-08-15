@@ -389,7 +389,7 @@ Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 | 3 | 怎么回到 App | `isTaskRoot` 分支 | `REORDER_TO_FRONT` | 转交管理 Activity → `PendingIntent` | **库内管理页 + 中转页转发**（AppAuth/Auth0 拓扑，消费方零接线） | ✅ 已对齐 |
 | 4 | redirect 形态 | 带 host | `scheme:/path` 无 host | 不限定 | 无 host（RFC 8252 §7.1 示例形态） | ✅ 已对齐 |
 | 5 | 结果通道 | 双通道（返回值 + flow） | 单通道（bus） | 单通道（PendingIntent） | **单通道**，`signIn()` 不挂起 | ✅ 已对齐 |
-| 6 | 取消检测 | 「做不到」 | ON_RESUME + `hasPending` | `canceledIntent` | **分层**：库拥有启动时是确定信号，纯浏览器兜底才用启发式 | ⬜ 待对齐 |
+| 6 | 取消检测 | 「做不到」 | ON_RESUME + `hasPending` | `canceledIntent` | **分层**：Auth Tab/CCT 确定信号，系统浏览器迟到的确定信号 | ✅ 已对齐 |
 | 7 | 幂等 / replay | 记住最后 otc | `resetReplayCache()` | — | **两个机制各司其职**（前者防跨通路重复，后者防陈旧 replay） | ⬜ 待对齐 |
 | 8 | URL 解码 | 未提 | 手写 20 行 percent-decoder | — | 用 ktor 的 `decodeURLQueryComponent()`（既有依赖） | ⬜ 待对齐 |
 | 9 | 浏览器回退链（校准 #3 时新发现） | Auth Tab → 系统浏览器（两极，未论证） | CCT 探测失败落 ACTION_VIEW | CCT 优先 | **Auth Tab → CCT → 系统浏览器** | ✅ 已对齐 |
@@ -734,3 +734,59 @@ redirect、服务端白名单同步替换即可，无新旧共存问题。
 
 TrendingAI 的实测佐证：其全部三个消费场景（登录面板热路径、绑定页、进程回收冷启动）
 全走总线，没有一处需要挂起返回值——「挂起等结果」在真实 App 里是个没有需求的 API。
+
+## 差异 #6 的完整结论（已对齐）
+
+### 背景
+
+- **正文**：Auth Tab 通路可映射 `Cancelled`；回退通路「做不到」——App 什么都收不到，
+  `signIn()` 一直挂着，由调用方协程作用域负责收尸（§6.2、限制 #1）
+- **TrendingAI**：App 层启发式约 20 行——`awaitingOauth` 标志（「人跑到浏览器去了」）
+  + `ON_RESUME` 兜底复位 + `hasPending` 防竞态。注释记录实测教训：CCT 关闭没有任何
+  回调，不兜底则「面板永远转圈、按钮全禁用（实测踩到）」；emit 与收集隔一次协程调度，
+  `ON_RESUME` 可能插在中间，不看 `hasPending` 会把成功误判成取消
+- **AppAuth / Auth0**：确定信号——管理页 `onResume` 时无响应数据即判取消（AppAuth 的
+  `canceledIntent`、Auth0 的状态机分支 4，均已逐字核对）；Auth0 的 Auth Tab 通路另有
+  launcher 的 `onCancel` 回调
+- **前置已变**：#3 的管理页状态机分支 4 就是取消分支；#5 撤掉挂起 `signIn()` 后，
+  正文「由调用方作用域负责」的机制已不存在，取消必须成为结果通道的一等公民
+
+### 问题
+
+1. 正文的「做不到」是错的——前提是「库只有中转页」。管理页压在浏览器页下面，用户
+   放弃时它必然 resume，这就是信号，两家参考实现用的正是它
+2. TrendingAI 的启发式是在 App 层重新发明管理页的 `onResume`，还要自己扛调度竞态
+   （`hasPending`）——这段最易错的代码正是库该下沉的
+3. 隐蔽陷阱须显式记录：管理页若漏写 `onNewIntent` 里的 `setIntent(intent)`（Auth0
+   专门覆写了这三行），`getIntent()` 永远返回启动时的旧 intent、data 恒为 null——
+   **每一次 CCT 成功回跳都被判成取消**，且单实例直跑的测试不触发 `onNewIntent`，极易全绿
+
+### 方案
+
+1. **撤回「做不到」与「作用域负责」**，改为按通路分层的取消检测，全部经
+   `oauthResults` 投递 `Cancelled`（#5 单通道）：
+
+| 通路 | 信号 | 性质 |
+|---|---|---|
+| Auth Tab | launcher 回调 `onCancel` | 确定，即时 |
+| CCT | 管理页 `onResume` 且无 data（关闭动作直接触发 resume） | 确定，即时 |
+| 系统浏览器 | 同上，但 resume 要等用户自行回到 App | 确定但迟到；语义 =「用户放弃后回到了 App」 |
+
+2. **成功/取消竞态被结构性消掉**：Android 保证 `onNewIntent` 先于 `onResume`，成功
+   路径的 data 总是先就位——TrendingAI 用 `hasPending` 手工防的竞态在管理页拓扑里
+   不存在。残余窄竞态仅一个：用户授权后抢在回跳送达前手动切回 App，产生
+   `Cancelled` → `SignedIn` 序列，UI 按序处理即自愈；写进 README 限制（替换原限制 #1）
+3. **消费方代码归零**：`awaitingOauth`/`ON_RESUME`/`hasPending` 约 20 行整体消失，
+   §5.4 接线成本表再减一项
+4. **落地反向验证点**：删掉管理页 `onNewIntent` 里的 `setIntent(intent)` → 「CCT 成功
+   回跳」测试必须变红（红的形态正是「成功被判成取消」），守的就是问题 3 的陷阱
+
+### 场景
+
+用户点「GitHub 登录」，CCT 打开授权页，用户点 × 关掉：
+
+| 实现 | 发生什么 | 用户看到 |
+|---|---|---|
+| 正文设计 | 回退通路无信号，挂起的 `signIn()` 永不返回 | **面板永远转圈、按钮全禁用**——TrendingAI 实测踩到的正是这个 |
+| TrendingAI | App 层 `ON_RESUME` 启发式复位，`hasPending` 防误伤成功路径 | 恢复正常，代价是 20 行易错代码 × 每个消费方 |
+| 本库裁决 | CCT 关闭 → 管理页 resume → 分支 4 → 发 `Cancelled` | 消费方在唯一的 `collect` 里收到 `Cancelled`，loading 复位；20 行不用写 |
