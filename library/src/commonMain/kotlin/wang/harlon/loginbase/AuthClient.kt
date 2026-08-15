@@ -21,8 +21,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -152,12 +155,19 @@ class AuthClient(
     private val _authState = MutableStateFlow<AuthState>(AuthState.Unknown)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
 
-    /** 从存储恢复登录态。App 启动时调一次，之后 [authState] 才有意义。 */
+    /**
+     * 从存储恢复登录态。App 启动时调一次，之后 [authState] 才有意义。
+     *
+     * 顺带排空停泊的 OAuth 回跳（进程在浏览器授权期间被系统回收的场景，
+     * 见 [handleOAuthCallback]）：有停泊的 URL 时这里会发起一次 otc 兑换，
+     * 其结果照常从 [oauthResults] 送达，本方法返回**排空之后**的状态。
+     */
     suspend fun restore(): AuthState {
         val state = if (tokenStore.load() != null) AuthState.SignedIn
         else AuthState.SignedOut(SignOutReason.NoSession)
         _authState.value = state
-        return state
+        OAuthCallbackParking.take()?.let { handleOAuthCallback(it) }
+        return _authState.value
     }
 
     // ---- 邮箱验证码 ----
@@ -217,6 +227,83 @@ class AuthClient(
         request("$base/oauth/exchange", mapOf("otc" to otc))
             .toSession()
             .also { persist(it.tokens) }
+
+    // ---- 社交登录（OAuth 回跳） ----
+
+    private val _oauthResults = MutableSharedFlow<OAuthOutcome>(
+        replay = 1, // 兜「投递早于订阅」：进程回收后 restore() 里的处理先于 UI 订阅
+        extraBufferCapacity = 1,
+    )
+
+    /**
+     * 消费方唯一的 OAuth 结果通道。
+     *
+     * 发起登录的 UI 可能在浏览器往返期间被重建（屏幕旋转）甚至随进程消失（系统回收），
+     * 所以结果不走「发起调用的返回值」，只从这里广播——UI 在一处 `collect`，一处
+     * 处理全部五种 [OAuthOutcome]。
+     *
+     * `replay = 1` 只为兜「投递早于订阅」的时序，**不是历史记录**：处理完结果调
+     * [consumeOauthResult] 清掉，否则后来的订阅者（如登录后才打开的绑定页）会收到
+     * 早已处理过的陈旧结果。
+     */
+    val oauthResults: SharedFlow<OAuthOutcome> = _oauthResults.asSharedFlow()
+
+    /** 声明 [oauthResults] 的当前结果已处理完，清掉 replay 缓存。 */
+    fun consumeOauthResult() {
+        _oauthResults.resetReplayCache()
+    }
+
+    /**
+     * 最近一次 otc 兑换及其结果，[oauthMutex] 保护。
+     *
+     * otc 单次有效、兑换即销毁，而回跳 URL 的送达次数库控制不了（用户点浏览器历史里
+     * 的链接、ROM 重放 intent）。不去重的话，重复送达的第二次兑换会得到
+     * `invalid_otc`——与「真过期」无法区分，用户刚登录成功就看到一条假失败。
+     */
+    private var lastOtcExchange: Pair<String, OAuthOutcome>? = null
+
+    /** 保护 [lastOtcExchange]，并把重复回跳的并发兑换收敛成一次（同 refresh 的单飞思路） */
+    private val oauthMutex = Mutex()
+
+    /**
+     * 处理一次 OAuth 回跳。**所有通路的唯一汇合点**：浏览器模块的两条通路、
+     * 进程回收后的停泊排空（[restore]）、以及自定义流程的直接调用都汇到这里。
+     *
+     * - 幂等：同一 otc 只兑换一次，重复送入返回缓存结果、不打服务端，也**不重复投递**
+     * - 结果（首次处理的）必发一份到 [oauthResults]——UI 只看那里；返回值给直接调用方
+     *   （自定义流程、测试）用
+     * - 对任何输入**不抛业务异常**：兑换失败映射为 [OAuthOutcome.Failed]，认不出的
+     *   形状映射为 [OAuthOutcome.Unrecognized]（协程取消照常穿透）
+     */
+    suspend fun handleOAuthCallback(url: String): OAuthOutcome =
+        when (val parsed = OAuthCallbackParams.parse(url)) {
+            is OAuthCallbackParams.Login -> exchangeOtcIdempotent(parsed.otc)
+            is OAuthCallbackParams.Linked ->
+                publish(OAuthOutcome.Linked(OAuthProvider(parsed.provider)))
+            is OAuthCallbackParams.Failed -> publish(OAuthOutcome.Failed(parsed.reason))
+            OAuthCallbackParams.Unrecognized -> publish(OAuthOutcome.Unrecognized(url))
+        }
+
+    private suspend fun exchangeOtcIdempotent(otc: String): OAuthOutcome =
+        oauthMutex.withLock {
+            // 重复送入：返回缓存结果，不打服务端、不重复投递。失败结果同样缓存——
+            // 重复送达的是同一次流程，它的答案不该因为问了两遍而变化
+            lastOtcExchange?.takeIf { it.first == otc }?.let { return@withLock it.second }
+            val outcome = try {
+                OAuthOutcome.SignedIn(exchangeOtc(otc))
+            } catch (e: CancellationException) {
+                throw e // 取消不是结果：不缓存、不投递，下次送达照常兑换
+            } catch (e: LoginbaseException) {
+                OAuthOutcome.Failed(e.oauthFailureReason())
+            }
+            lastOtcExchange = otc to outcome
+            publish(outcome)
+        }
+
+    private suspend fun <T : OAuthOutcome> publish(outcome: T): T {
+        _oauthResults.emit(outcome)
+        return outcome
+    }
 
     /**
      * `POST /oauth/{provider}/link/start`：**已登录用户**绑定第二身份，返回授权 URL
