@@ -390,7 +390,7 @@ Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 | 4 | redirect 形态 | 带 host | `scheme:/path` 无 host | 不限定 | 无 host（RFC 8252 §7.1 示例形态） | ✅ 已对齐 |
 | 5 | 结果通道 | 双通道（返回值 + flow） | 单通道（bus） | 单通道（PendingIntent） | **单通道**，`signIn()` 不挂起 | ✅ 已对齐 |
 | 6 | 取消检测 | 「做不到」 | ON_RESUME + `hasPending` | `canceledIntent` | **分层**：Auth Tab/CCT 确定信号，系统浏览器迟到的确定信号 | ✅ 已对齐 |
-| 7 | 幂等 / replay | 记住最后 otc | `resetReplayCache()` | — | **两个机制各司其职**（前者防跨通路重复，后者防陈旧 replay） | ⬜ 待对齐 |
+| 7 | 幂等 / replay | 记住最后 otc | `resetReplayCache()` | — | **两个机制各司其职**（前者防重复打服务端，后者防重复送 UI） | ✅ 已对齐 |
 | 8 | URL 解码 | 未提 | 手写 20 行 percent-decoder | — | 用 ktor 的 `decodeURLQueryComponent()`（既有依赖） | ⬜ 待对齐 |
 | 9 | 浏览器回退链（校准 #3 时新发现） | Auth Tab → 系统浏览器（两极，未论证） | CCT 探测失败落 ACTION_VIEW | CCT 优先 | **Auth Tab → CCT → 系统浏览器** | ✅ 已对齐 |
 
@@ -790,3 +790,73 @@ TrendingAI 的实测佐证：其全部三个消费场景（登录面板热路径
 | 正文设计 | 回退通路无信号，挂起的 `signIn()` 永不返回 | **面板永远转圈、按钮全禁用**——TrendingAI 实测踩到的正是这个 |
 | TrendingAI | App 层 `ON_RESUME` 启发式复位，`hasPending` 防误伤成功路径 | 恢复正常，代价是 20 行易错代码 × 每个消费方 |
 | 本库裁决 | CCT 关闭 → 管理页 resume → 分支 4 → 发 `Cancelled` | 消费方在唯一的 `collect` 里收到 `Cancelled`，loading 复位；20 行不用写 |
+
+## 差异 #7 的完整结论（已对齐）
+
+### 背景
+
+这条实际是**两个独立问题**，正文和 TrendingAI 各自被真实问题逼出了其中一半：
+
+- **正文（§6.1）**：otc 去重——进程内记住最近处理过的 otc，重复送入返回缓存结果、
+  不打服务端。理由：服务端契约是 otc 单次有效、兑换即销毁，第二次 exchange 返回的
+  `invalid_otc` 与「真过期」无法区分
+- **TrendingAI**：通道 `consume()`——处理完事件后 `resetReplayCache()` 清 replay 缓存，
+  防陈旧事件重放给后来的订阅者。**没有 otc 去重**（重复送达时两次 `exchangeOtc` 照打）
+- **AppAuth**：无对应物（PendingIntent 单发即毁，无重放面，也不做 code 交换）
+- **前置**：#5 定了 `oauthResults` 是 replay=1 的**广播** SharedFlow（TrendingAI 实证
+  需要广播：登录面板与绑定页两个宿主同时收听，不能换成 Channel 的单收者语义）；
+  #6 已让 `hasPending` 的用途（取消启发式防竞态）消失
+
+### 问题
+
+两个问题防的是不同方向的重复，单独哪一半都不完整：
+
+**问题一：同一回跳被送入两次（重复打向服务端）。** 送达次数库控制不了——用户点浏览器
+历史里的回跳链接、某些 ROM 重放 intent、回退判定失误致双送（§6.1 已列）。无去重时：
+
+```
+T0    exchangeOtc("abc") 成功 → 会话落盘 → UI「登录成功」
+T+10s 同一 URL 再送达 → exchangeOtc("abc") 再打 → 服务端查无此 otc
+      → invalid_otc → 只能发 Failed → UI 紧跟一条「登录失败」
+```
+
+用户刚成功就看到失败，会话其实好好的；开发者收到「登录时好时坏」的反馈且永远
+复现不了。
+
+**问题二：已处理的结果被重放给后来的订阅者（重复送向 UI）。** replay=1 的本意是兜
+冷启动时序（结果先于订阅产生），副作用是缓存里一直躺着最后的结果：
+
+```
+T0     登录成功，面板处理完 SignedIn、关闭 —— replay 里躺着这条 SignedIn
+T+5min 用户打开绑定页，它也 collect oauthResults（等 Linked）
+       → 订阅瞬间收到五分钟前的 SignedIn → 弹莫名的「登录成功」/ 误触发导航
+```
+
+**这不是边角**：只要存在第二个订阅点就必然发生。TrendingAI 正是踩了才写 `consume()`。
+otc 去重管不到 `Linked`/`Cancelled` 的重放，consume 也拦不住自己执行前的双送——
+两半互不覆盖。
+
+### 方案
+
+1. **两个都要，各司其职**（维持初裁）：
+   - **otc 幂等**在 `handleOAuthCallback` 内部：同一 otc 只 exchange 一次，重复返回
+     缓存结果。护网络层，覆盖 #3 推演的「重复回跳」「陈旧链接」路径
+   - **通道 consume** 在 `oauthResults` 层：处理完清 replay，防陈旧重放。护 UI 层。
+     语义裁死：**replay 只为兜「投递早于订阅」的时序，不是历史记录**；API 形态落地定，
+     可探索库内自动清，但消费方显式 consume（TrendingAI 现状）是保底形态
+2. **`hasPending` 不下沉**：其用途已随 #6 的启发式消失
+3. **收益比（本条在 #26 中最高一档）**：总代价 20 行内纯 commonMain 逻辑 + 2 条 JVM
+   单测、零依赖；总收益是消掉两类**用户可见的假状态**，其中问题二在既定通道形态下
+   是结构性必现
+4. **落地反向验证点**（两条都是时序性质，按会话惯例先破坏再恢复）：
+   - 移除 otc 去重 → 「同一 otc 双送」测试必须变红（红的形态：第二次打了服务端）
+   - 处理后不清 replay → 「新订阅者不重收已处理结果」测试必须变红
+
+### 场景
+
+见问题节的两条时间线（本条的问题本身就是场景驱动的）。合并后的对照：
+
+| 情形 | 只有去重（正文） | 只有 consume（TrendingAI） | 两个都有（裁决） |
+|---|---|---|---|
+| 浏览器历史重放同一 otc | 静默吞掉 ✅ | 双打服务端，成功后弹假失败 ❌ | 静默吞掉 ✅ |
+| 绑定页订阅到陈旧 SignedIn | 照常重放 ❌ | 通道已清，安静 ✅ | 安静 ✅ |
