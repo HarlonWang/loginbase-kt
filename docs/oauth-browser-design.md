@@ -1,9 +1,8 @@
 # 设计方案：社交登录的浏览器环节收进库内（Auth Tab + intent-filter 双通路）
 
-> 状态：**校准中**。对应 `docs/todo.md` 第 26 条。
+> 状态：**校准完成（#1–#9 全部已对齐），待统一重写正文**。对应 `docs/todo.md` 第 26 条。
 >
 > ⚠️ **正文第 5 节起的部分内容已被第 11 节的校准结论推翻，以第 11 节为准。**
-> 校准完成后再统一重写正文。
 >
 > 目标读者：维护者。决策背景见本文第 1 节，落地前必须先做第 8 节的 spike。
 
@@ -391,7 +390,7 @@ Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 | 5 | 结果通道 | 双通道（返回值 + flow） | 单通道（bus） | 单通道（PendingIntent） | **单通道**，`signIn()` 不挂起 | ✅ 已对齐 |
 | 6 | 取消检测 | 「做不到」 | ON_RESUME + `hasPending` | `canceledIntent` | **分层**：Auth Tab/CCT 确定信号，系统浏览器迟到的确定信号 | ✅ 已对齐 |
 | 7 | 幂等 / replay | 记住最后 otc | `resetReplayCache()` | — | **两个机制各司其职**（前者防重复打服务端，后者防重复送 UI） | ✅ 已对齐 |
-| 8 | URL 解码 | 未提 | 手写 20 行 percent-decoder | — | 用 ktor 的 `decodeURLQueryComponent()`（既有依赖） | ⬜ 待对齐 |
+| 8 | URL 解码 | 未提 | 手写 20 行 percent-decoder | — | 用 ktor 的 `parseQueryString()`（既有依赖），畸形输入裁为 `Unrecognized` | ✅ 已对齐 |
 | 9 | 浏览器回退链（校准 #3 时新发现） | Auth Tab → 系统浏览器（两极，未论证） | CCT 探测失败落 ACTION_VIEW | CCT 优先 | **Auth Tab → CCT → 系统浏览器** | ✅ 已对齐 |
 
 > 逐条对齐时都要**带一个具体场景**说明校准方案，不要只给结论。
@@ -860,3 +859,46 @@ otc 去重管不到 `Linked`/`Cancelled` 的重放，consume 也拦不住自己�
 |---|---|---|---|
 | 浏览器历史重放同一 otc | 静默吞掉 ✅ | 双打服务端，成功后弹假失败 ❌ | 静默吞掉 ✅ |
 | 绑定页订阅到陈旧 SignedIn | 照常重放 ❌ | 通道已清，安静 ✅ | 安静 ✅ |
+
+## 差异 #8 的完整结论（已对齐）
+
+### 背景
+
+- **正文**：未提。`handleOAuthCallback` 要解析 query，解码环节是空白
+- **TrendingAI**：手写 ~20 行 percent-decoder（逐字节扫描、`%XX`、`+`→空格、UTF-8
+  字节积累后 `decodeToString`），query 切分用 `substringAfter('?')` + `split('&')`
+- **ktor（既有依赖）**：`ktor-client-core` 3.5.1 是 commonMain 三依赖之一，
+  `io.ktor.http` 随之进 classpath；`parseQueryString()` 一步完成切分 + 解码，KMP
+  全平台、带官方测试
+- **红线关系**：解码是纯内部实现，不把 ktor 类型写进公开契约——与
+  `libs.versions.toml` 里拒绝 `ktor-client-auth` 的红线注释不冲突
+
+### 问题
+
+1. 手写字节级解码是无谓的表面积：classpath 上已有成熟实现，重写违反库自己的
+   不重复发明纪律
+2. 手写版有真实潜伏缺陷（已逐行核对）：else 分支**逐 Char** 做
+   `toString().encodeToByteArray()`——非 BMP 字符（emoji 等）是两个 surrogate Char，
+   分开编码各自变成 U+FFFD——**未编码的非 BMP 字符被解成乱码**，且没有测试会抓到
+3. 畸形输入行为要显式裁决：中转页 exported，任何 App 都能塞任意 URL。手写版对非法
+   `%` 序列宽容放行（当字面量），ktor 抛异常——库必须保证 `handleOAuthCallback`
+   对任何输入不崩
+
+### 方案
+
+1. **维持初裁：用 ktor，不手写**。query 提取沿用 `substringAfter('?')`——刻意不用
+   ktor 的 `Url()` 整串解析，它对 `scheme:/path` 无 host 自定义形态（#4）的行为未验证，
+   不引入这个未知数；解码用 `parseQueryString()`
+2. **畸形输入裁为 `Unrecognized`**：ktor 解码抛异常时 `runCatching` 收编为
+   `Unrecognized(url)`——比手写版的静默放行诚实（`Unrecognized` 的设计意图就是
+   「报给开发者的配置/输入错误」，§5.1）
+3. 配畸形输入测试三类（`%zz`、截断的 `%2`、非 BMP 字符）。常规单测，非时序性质，
+   无反向验证义务
+
+### 场景
+
+限制 #4 已写明 `Failed.reason` 由服务端 App 自定义、非协议保证。某服务端把用户可读的
+失败说明塞进 error 参数（含中文或 emoji，percent-encoded）：ktor 路径正确解出原文；
+手写路径把非 BMP 字符逐 surrogate 编码，UI 显示 `??` 乱码，且没人会想到测 emoji。
+反向的恶意输入：别的 App 向中转页塞 `?error=%zz`——手写版静默当字面量放行（问题被
+掩盖），裁决版返回 `Unrecognized`，开发者在结果通道里直接看到异常输入。
