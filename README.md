@@ -24,7 +24,7 @@
 
 | 本库版本 | 实现的协议版本（= 服务端包版本） |
 |---|---|
-| 0.1.x（未发布） | `loginbase@1.3.0` |
+| 0.1.x | `loginbase@1.3.0` |
 
 协议变更纪律（分仓版）：服务端实现 + `protocol.md` 同 commit，同时在本仓开跟进 issue，客户端版本落地前不关。分仓决策与理由见服务端仓 [`docs/design.md`](https://github.com/HarlonWang/loginbase/blob/main/docs/design.md) 的「两个仓库」节。
 
