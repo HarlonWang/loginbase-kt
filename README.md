@@ -219,6 +219,7 @@ auth.oauthResults.collect { outcome ->
 | 浏览器停在 `invalid_redirect`，App 无任何反应 | 服务端白名单缺这条 redirect；两边字符串肉眼相同时**数斜杠**——`scheme:/path` 单斜杠才是对的，`scheme://path` 会把 path 段解析成 host，精确匹配直接失败 |
 | 发起即抛「没有任何 Activity 认领」 | scheme 写错，或当前构建变体没配 placeholder |
 | 发起即抛「scheme 被其他应用抢注」 | 别的 App 声明了同一 scheme——这同时是安全信号，换独占的自有域名反写 |
+| **其他模块**的单测任务构建失败、报同一 placeholder 错误 | 直接依赖本模块的 Gradle 模块，其 test manifest 合并同样需要该占位符：经典 library 模块在 `defaultConfig` 给一行任意值；KMP android 模块的 DSL 没有 `manifestPlaceholders`，在 hostTest 源集放一个把本库三个节点 `tools:node="remove"` 掉的 manifest |
 
 ### 已知限制
 
@@ -338,6 +339,10 @@ localeProvider = { settings.languageTag ?: Loginbase.appLanguageTag() }
 ```
 
 **改动 `commonMain` 的形状后请本地跑一次 iOS 编译**（改 `expect` 签名、改 `TokenStore` 之类接口时，`iosMain` 的实现要跟着改）。CI 不做这件事：ubuntu runner 编不了 iOS，而为一个占位 target 在每个 PR 上起 macOS runner不划算。漏了也不会出坏产物——打 tag 时 `publish.yml` 跑在 macOS 上，编译不过就直接失败在构建阶段、早于任何上传，改完删 tag 重打即可。
+
+未用 import 清理：别信文本级 lint（ktlint 该规则漏报、纯文本扫描误报，均实证过）。
+用 `scripts/unused_imports.py` 的编译器裁判循环：`remove` 宽松删候选 → 编译 →
+`restore <日志>` 按 unresolved 恢复误删 → 循环至绿。日常靠 IDE 提交前 Optimize Imports 兜底。
 
 发布：打裸版本号 tag（如 `0.1.0`）触发 CI 在 macos runner 上 `publishAndReleaseToMavenCentral`。
 
