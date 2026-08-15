@@ -284,6 +284,7 @@ class AuthClient(
             OAuthCallbackParams.Unrecognized -> publish(OAuthOutcome.Unrecognized(url))
         }
 
+    @OptIn(LoginbaseInternalApi::class) // oauthFailureReason 的 opt-in 是给外部模块的墙，库内使用无虞
     private suspend fun exchangeOtcIdempotent(otc: String): OAuthOutcome =
         oauthMutex.withLock {
             // 重复送入：返回缓存结果，不打服务端、不重复投递。失败结果同样缓存——
@@ -303,6 +304,16 @@ class AuthClient(
     private suspend fun <T : OAuthOutcome> publish(outcome: T): T {
         _oauthResults.emit(outcome)
         return outcome
+    }
+
+    /**
+     * 浏览器模块专用的投递口（见 [LoginbaseInternalApi]）：不经过回跳 URL 的结果——
+     * 取消（管理页 onResume 判定）、开浏览器前的失败（link/start 打不通、无浏览器）——
+     * 也必须走 [oauthResults] 这条唯一通道。消费方代码不该调它。
+     */
+    @LoginbaseInternalApi
+    suspend fun publishOAuthOutcome(outcome: OAuthOutcome) {
+        publish(outcome)
     }
 
     /**

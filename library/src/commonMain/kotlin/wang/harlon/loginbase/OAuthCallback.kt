@@ -82,7 +82,8 @@ internal sealed interface OAuthCallbackParams {
 }
 
 /** [OAuthOutcome.Failed.reason] 的本地失败映射：能透传服务端错误码就透传。 */
-internal fun LoginbaseException.oauthFailureReason(): String = when (this) {
+@LoginbaseInternalApi
+fun LoginbaseException.oauthFailureReason(): String = when (this) {
     is LoginbaseException.Api -> rawError
     is LoginbaseException.Network -> "network"
     is LoginbaseException.Storage -> "storage"
@@ -111,4 +112,20 @@ internal object OAuthCallbackParking {
 
     /** 取出并清空。写读各在一方（管理页写、restore 读），[Volatile] 保证可见性。 */
     fun take(): String? = parked.also { parked = null }
+}
+
+/**
+ * 配套模块的跨 artifact 挂点（`internal` 出不了编译单元，见 [LoginbaseInternalApi]）。
+ * 消费方代码不该出现对它的任何引用。
+ */
+@LoginbaseInternalApi
+object LoginbaseModuleBridge {
+
+    /**
+     * 浏览器模块冷启动通路专用：进程里还没有可用的 `AuthClient` 时，把回跳 URL 停进
+     * [OAuthCallbackParking]，由 `restore()` 排空（时序见该对象文档）。
+     */
+    fun parkOAuthCallback(url: String) {
+        OAuthCallbackParking.park(url)
+    }
 }

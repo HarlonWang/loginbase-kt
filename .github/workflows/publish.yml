@@ -27,7 +27,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Test
-        run: ./gradlew :library:testAndroidHostTest
+        run: ./gradlew :library:testAndroidHostTest :library-browser:testAndroidHostTest
 
       - name: Publish to Maven Central
         run: ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache
