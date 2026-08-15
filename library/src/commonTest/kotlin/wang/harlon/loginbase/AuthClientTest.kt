@@ -1,7 +1,7 @@
 package wang.harlon.loginbase
-
+import io.ktor.http.headersOf
 import io.ktor.client.HttpClient
-import io.ktor.client.plugins.HttpTimeout
+
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
@@ -10,7 +10,6 @@ import io.ktor.client.request.HttpResponseData
 import io.ktor.client.request.get
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.headersOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
