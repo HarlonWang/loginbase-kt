@@ -236,11 +236,13 @@
 - **补做的集成测试**：`ReadmeIntegrationTest` 把指南第 2 步的接线**逐字**放进测试，两个各装 `Auth` 插件的 client 同时 401，断言服务端只被刷新一次；同时实证了「装了 `Auth` 插件的 client 与本库共存不会死锁」（死锁的话用例会直接挂住）。配一个**反例用例**：绕过 `auth.refresh()` 自己打刷新接口 → 服务端被刷两次。反例的作用是让正例那个 `== 1` 的断言有意义，而不是碰巧成立。
 - `ktor-client-auth` 只作 `testImplementation`，不进产物。库自己绝不引它——`BearerTokens` 在那个包里，引了就等于把 ktor 的插件 API 写进本库的公开契约。
 
-### [ ] 26. OAuth 浏览器环节与回调解析都甩给了 App
+### [x] 26. OAuth 浏览器环节与回调解析都甩给了 App — 已完成（2b 增强遗留）
 
 - **位置**：`AuthClient.kt:160-168`
 - **问题**：`githubSignInUrl()` 只返回字符串，README 让消费方自己 `openInBrowser(...)`。业界（Auth0、Firebase、AppAuth、Clerk）都把这步收进 SDK，Android 用 Custom Tabs / 新的 AuthTab——不是为省事，而是回调拦截、用户取消这些点每个接入方都会踩。`:161` 的注释自己强调了「不要用内置 WebView」，**但把执行这条纪律的责任推给了调用方**。另外 `exchangeOtc` 要 App 自己从 deep link 抠 `otc`，而 link 流程回跳的是 `linked=github` / `error=already_linked`，完全另一套，库连 `parseCallback(uri)` 都没提供。
 - **修法**：Android 侧提供 Custom Tabs 启动器 + `parseCallback(uri)`；至少先补 `parseCallback`，成本最低收益最直接。
+
+- **落地**：远超原修法——完整设计见 `docs/oauth-browser-design.md`（十条差异对照 AppAuth/Auth0/TrendingAI 逐条校准后定稿）。分期 1（commonMain：`OAuthOutcome`/`handleOAuthCallback`/`oauthResults`+consume/otc 幂等/停泊排空，PR #8）与 2a（可选模块 `loginbase-kt-browser`：中转页+管理页双 Activity、CCT/系统浏览器回退、取消分层、冷启动停泊，PR #10）已合并；README 接入指南已更新（3 期）；TrendingAI 生产接入并真机验收通过（净 -87 行，验收结论在设计文档 §8，含 AppAuth #977 场景的实测免疫）。六条预记反向验证点全部执行。**遗留**：2b（Auth Tab 优先级，纯增强）与 §8 的三项补验（CCT 形态、无 CCT 设备兜底、link 流程）。
 
 ### [x] 29. 有个测试真实耗时 45 秒 — 已完成（随第 14 条）
 

@@ -31,7 +31,8 @@
 ## 坐标
 
 ```
-Maven      wang.harlon:loginbase-kt      （Maven Central，本仓 tag 触发 CI 发布）
+Maven      wang.harlon:loginbase-kt              核心（Maven Central，本仓 tag 触发 CI 发布）
+           wang.harlon:loginbase-kt-browser      社交登录浏览器环节（可选，Android-only，同版本发布）
 包名        wang.harlon.loginbase
 ```
 
@@ -112,15 +113,10 @@ auth.authState.collect { state ->
 val cooldown = auth.sendCode(email).cooldownSeconds   // 倒计时用服务端给的值，别写死
 auth.verifyCode(email, code)                          // 成功即落盘，authState 自动变 SignedIn
 
-// 社交登录：交给系统浏览器，不要用 WebView
-openInBrowser(auth.signInUrl(OAuthProvider.GitHub, "cn.example://auth/callback"))
-
-// deep link 回来时
-val otc = uri.getQueryParameter("otc") ?: return
-auth.exchangeOtc(otc)
-
-// 已登录用户绑定第二身份：回跳参数是 linked=<provider> 或 error=<reason>，不是 otc
-openInBrowser(auth.linkUrl(OAuthProvider.GitHub, "cn.example://auth/callback"))
+// 社交登录：浏览器环节（授权页打开、回跳捕获、登录/绑定分辨、otc 兑换、
+// 取消判定、进程被回收后的续跑）整体归可选模块 loginbase-kt-browser，
+// 接入见下方「社交登录」一节。发起就这一行：
+auth.signIn(activity, OAuthProvider.GitHub)      // 不挂起，结果从 auth.oauthResults 送达
 ```
 
 ### 6. 登出
@@ -151,6 +147,91 @@ class FeedApi(private val api: HttpClient) {
 | `AuthClient(...)` 出现在 Activity/ViewModel 里 | 单飞失效，多实例各刷各的 |
 
 > 多个业务 client 且 401 错开发生时，会多一次令牌轮换（不烧配额，因为用的是有效令牌）。想连这次也省掉，可以在 `refreshTokens` 里先比对 `oldTokens?.accessToken` 与 `auth.accessToken()`：不一样就说明别人已经刷过了，直接用新的。
+
+## 社交登录（可选模块 `loginbase-kt-browser`）
+
+邮箱验证码只用核心库即可；要用社交登录再加这个 Android-only 模块，**不用它的项目
+零感知**（没有 placeholder 要配、不会合并进多余的 Activity）。加上之后，授权页在
+合规的外部 user-agent 打开（Custom Tab，探测不到则系统浏览器），回跳捕获、登录/绑定
+分辨、otc 兑换、取消判定、进程被回收后的续跑——**一个都不用写**。
+
+### 接线：一行依赖 + 每变体一行 placeholder
+
+```kotlin
+dependencies {
+    implementation("wang.harlon:loginbase-kt-browser:<version>")   // 与核心同版本
+}
+
+android {
+    defaultConfig {
+        // scheme 用自有域名反写（RFC 8252 §7.1 的 MUST，example.cn → cn.example）。
+        // 中转页 intent-filter 与运行时 redirect 推导都从这一个占位符取值，不会漂移；
+        // 忘配会直接构建失败（这是刻意的：静默回落的症状离病因太远）
+        manifestPlaceholders["loginbaseRedirectScheme"] = "cn.example"
+    }
+    buildTypes.getByName("debug") {
+        // debug 变体独立 scheme：与 release 同装一台设备时互不抢回跳
+        manifestPlaceholders["loginbaseRedirectScheme"] = "cn.example.debug"
+    }
+}
+```
+
+```kotlin
+// 发起。不挂起——挂起返回值在屏幕旋转、进程回收下必然中断，结果只从唯一通道送达
+auth.signIn(activity, OAuthProvider.GitHub)
+auth.link(activity, OAuthProvider.GitHub)        // 已登录用户绑定第二身份
+
+// 一处收结果，五种情况穷尽处理。replay = 1 只兜「投递早于订阅」（进程回收后
+// 冷启动），不是历史记录：处理完调 consume 清掉，否则后来的订阅者会收到陈旧结果
+auth.oauthResults.collect { outcome ->
+    when (outcome) {
+        is OAuthOutcome.SignedIn -> { auth.consumeOauthResult(); dismissLoginPanel() }
+        is OAuthOutcome.Linked -> { auth.consumeOauthResult(); refreshIdentity() }
+        is OAuthOutcome.Failed -> { auth.consumeOauthResult(); showError(outcome.reason) }
+        OAuthOutcome.Cancelled -> { auth.consumeOauthResult(); resetLoading() }
+        is OAuthOutcome.Unrecognized -> Unit   // 配置类异常输入，报开发者、不打扰用户
+    }
+}
+```
+
+用户关掉授权页会收到**确定的 `Cancelled`**——不需要再写 `ON_RESUME` 启发式去猜
+「人是不是从浏览器空手回来了」。
+
+### 服务端白名单：三处一致
+
+同一个 redirect 要在三处一致，而写错的地方和报错的地方对不上：
+
+| 出现在哪 | 谁负责 | 写错的症状 |
+|---|---|---|
+| 服务端 redirect 白名单 | 服务端 App 配置 | 授权还没开始就被拒（`invalid_redirect`） |
+| App manifest（经 placeholder） | Android 构建 | 回跳没人接，用户授权完卡在打不开的页面 |
+| 运行时拼 redirect（经 meta-data 读回） | 库 | 与 manifest 物理同源，**不会单独错** |
+
+该填给服务端什么，`Loginbase.redirectUri(context)` 一行可查（形如
+`cn.example:/loginbase/callback`，单斜杠无 host）；debug 构建首次发起时也会自动打进
+日志（tag `loginbase`）。
+
+**症状 → 原因**：
+
+| 症状 | 原因 |
+|---|---|
+| 构建失败 `requires a placeholder substitution` | 没配 `loginbaseRedirectScheme`，或当前变体没配。不用社交登录就不要引本模块 |
+| 浏览器停在 `invalid_redirect`，App 无任何反应 | 服务端白名单缺这条 redirect；两边字符串肉眼相同时**数斜杠**——`scheme:/path` 单斜杠才是对的，`scheme://path` 会把 path 段解析成 host，精确匹配直接失败 |
+| 发起即抛「没有任何 Activity 认领」 | scheme 写错，或当前构建变体没配 placeholder |
+| 发起即抛「scheme 被其他应用抢注」 | 别的 App 声明了同一 scheme——这同时是安全信号，换独占的自有域名反写 |
+
+### 已知限制
+
+1. **系统浏览器兜底通路的取消信号迟到**：要等用户自己回到 App 才能判定；极端时序下
+   可能先收到 `Cancelled` 再收到 `SignedIn`，按序处理即自愈
+2. **服务端白名单要人工配**，debug/release 变体各一条——这是安全控制，不能由客户端决定
+3. **自定义 scheme 谁都能声明**（RFC 8252 承认的固有弱点）：发起前自检会就地报出抢注，
+   且 otc 60 秒单次有效，即便被截也只有一次兑换窗口
+4. `Failed.reason` 由服务端 App 定义（`already_linked` 是典型值），不是协议保证
+5. **只有 Android**。iOS 转正前仍是 `signInUrl()` + 自己开浏览器（见「iOS 是占位」）
+
+设计全貌（双 Activity 拓扑、AppAuth #977 免疫、与 AppAuth/Auth0 的逐条对照）见
+[`docs/oauth-browser-design.md`](docs/oauth-browser-design.md) 。
 
 ## engine 与 `HttpClient`
 
@@ -184,7 +265,7 @@ engine 的生命周期仍归你，`AuthClient.close()` 不会关它。**为什�
 
 ## 状态
 
-核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**。64 个测试。
+核心已实现：`AuthClient`（邮箱验证码 / 社交 OAuth / link / refresh / 登出）、`TokenStore` 与两个平台实现、`AuthState`、**单飞 refresh**、**邮件语言上报**、**OAuth 回跳处理**（`handleOAuthCallback` / `oauthResults`，含 otc 幂等与通道 consume）。浏览器环节在可选模块 `loginbase-kt-browser`（中转页 + 管理页双 Activity、CCT/系统浏览器回退、取消判定、冷启动停泊），已在 TrendingAI 生产环境验收。89 个测试。
 
 ### 登录态
 
@@ -237,7 +318,10 @@ localeProvider = { settings.languageTag ?: Loginbase.appLanguageTag() }
 
 ## 设计红线
 
-**依赖最小集**：`ktor-client-core` + `kotlinx-serialization-json` + `kotlinx-coroutines-core`，**仅此三个**。
+**依赖最小集**：核心 artifact = `ktor-client-core` + `kotlinx-serialization-json` +
+`kotlinx-coroutines-core`，**仅此三个**；可选平台模块只允许**该平台的一等公民 API**
+（`loginbase-kt-browser` 的 `androidx.browser` / `kotlinx-coroutines-android`——AndroidX
+与 JetBrains，信任级别同系统 SDK；supabase-kt 的 `Auth` 模块同此分法）。
 
 - 不用 `ktor-client-content-negotiation` / `ktor-serialization-kotlinx-json`：请求体手工序列化、响应手工解析
 - 不用 `multiplatform-settings`：存两个字符串而已，平台实现各十几行（Android `SharedPreferences`、iOS `NSUserDefaults`），且**落盘的同步性是与服务端救活机制配套的关键语义，不该藏在第三方库的默认参数里**
@@ -249,7 +333,7 @@ localeProvider = { settings.languageTag ?: Loginbase.appLanguageTag() }
 ## 开发
 
 ```bash
-./gradlew :library:testAndroidHostTest              # CI 跑的（ubuntu 编不了 iOS）
+./gradlew :library:testAndroidHostTest :library-browser:testAndroidHostTest   # CI 跑的（ubuntu 编不了 iOS）
 ./gradlew :library:compileKotlinIosSimulatorArm64   # iOS 侧编译需 macOS
 ```
 
