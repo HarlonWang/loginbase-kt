@@ -1,0 +1,39 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- 中转页：对外的哑门铃。刻意保持默认 launchMode（standard）——singleTask 收
+             浏览器外部 intent 是 onNewIntent 双路径与任务分裂的坑源（design §11 差异 #2）。
+             excludeFromRecents：冷启动通路里它短暂成为任务根，不该在最近任务留痕 -->
+        <activity
+            android:name="wang.harlon.loginbase.browser.LoginbaseCallbackActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <!-- 只按 scheme 过滤：回跳 URI 无 host（design §11 差异 #4），Android 的
+                     <data> 规则是「没有 host 时所有 path 属性都被忽略」，写了也是摆设 -->
+                <data android:scheme="${loginbaseRedirectScheme}" />
+            </intent-filter>
+        </activity>
+
+        <!-- 管理页：库内锚点，外界摸不到。singleTask + 透明，姿态与 AppAuth 的
+             AuthorizationManagementActivity / Auth0 的 AuthenticationActivity 逐字一致
+             （design §11 差异 #3）。它只收库自己转发的内部 intent，与 #2 的
+             「接收外部 intent 的 Activity 不用 singleTask」不矛盾 -->
+        <activity
+            android:name="wang.harlon.loginbase.browser.LoginbaseAuthActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- 同一占位符再喂一份给运行时（经 PackageManager 读回），与上面 intent-filter
+             物理上不可能漂移——消费方 buildConfigField 双喂在库场景下的等价物 -->
+        <meta-data
+            android:name="loginbase.redirectScheme"
+            android:value="${loginbaseRedirectScheme}" />
+    </application>
+
+</manifest>
