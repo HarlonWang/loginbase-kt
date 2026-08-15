@@ -141,7 +141,17 @@ fun consumeOauthResult()
 `signInUrl` / `linkUrl` **保留但降级**：仍然公开（自定义流程、非 Android 平台需要），
 文档上标注「一般不要直接用，用 `signIn()`」。
 
-### 5.2 `androidMain`（+ `androidx.browser`）
+### 5.2 可选浏览器模块（Android-only，独立 artifact）
+
+浏览器环节整体住在**独立的可选 artifact**（暂名 `loginbase-kt-browser`，同仓同版本
+发布）：两个 Activity、manifest 声明、三级回退链、下面的扩展函数、`androidx.browser`
+依赖都在这里。**不用社交登录的消费方不引它，零感知**——没有 placeholder 要配、没有
+多余 Activity 合并进来（裁决过程见 §11 差异 #10，含 AppAuth/Auth0 单 artifact 形态的
+反面教训）。
+
+模块化按**机制**分，不按 provider 分：客户端是服务端流、provider 无关，走浏览器流的
+所有 provider（GitHub、将来任何一家）共享这一套零增量代码；若未来引入需要原生 SDK
+的通路（如 Google Credential Manager 一键登录），各自独立成可选模块，不进本模块。
 
 ```kotlin
 /**
@@ -285,7 +295,7 @@ README 需要一个独立小节，含「三处一致」表与**症状 → 原因
 | 分辨登录/绑定 | 自己写 | — |
 | 调 `exchangeOtc` | 自己写 | — |
 | 取消检测 | ~20 行 `ON_RESUME` 启发式（含防竞态标志，易错） | — |
-| **消费方新增** | **7 项** | **每变体一行** |
+| **消费方新增** | **7 项** | **一行依赖（browser 模块）+ 每变体一行 placeholder** |
 
 `restore()` 与观察 `oauthResults` 不计入——它们本来就在接入指南里。
 
@@ -301,6 +311,9 @@ README 需要一个独立小节，含「三处一致」表与**症状 → 原因
 |---|---|
 | **App 还活着**（多数情况） | `signIn()` 发起时把 `this` 放进库内静态槽——**发起方就是它自己，不需要外人注册** |
 | **进程被回收** | 静态槽随进程消失 → 管理页把 URL **停泊**在静态里 → 起 launcher → App 冷启动 → **`restore()` 把停泊的 URL 排空** |
+
+模块拆分带来一条依赖方向约束：停泊槽须住在**核心**（browser 模块写入、核心的
+`restore()` 排空），保持 browser → core 单向依赖，具体形态落地时定。
 
 `restore()` 本来就是接入指南第 3 步、本来就必须在启动时调；而管理页的处理**必然早于**
 App 的 `restore()`（它是先被拉起的那个 Activity），时序天然成立。
@@ -400,10 +413,6 @@ data-first 是刻意的：Android 14 按 #977 的行为把管理页**重建而�
 5. **自定义 scheme 谁都能声明**——别的 App 装上去声明同一个 scheme 就能截胡回跳。这是
    RFC 8252 明确承认的固有弱点，也是优先走 Auth Tab（不发 Intent）的理由之一；另外 otc
    60 秒单次有效，即便被截也只有一次窗口。发起前自检（§5.3 第 2 层）能就地报出抢注
-6. 不用社交登录的消费方也会被合并进两个 Activity，且 **placeholder 缺失会构建失败**——
-   需要给一行任意占位值，或用 `tools:node="remove"` 移除。⚠️ 这一代价在校准中未显式
-   裁决（差异 #1 只讨论了使用者视角），具体绕法与「是否值得把浏览器环节拆独立
-   artifact」**待裁**，落地 2a 前需回答
 
 ## 8. 落地前必须先 spike 的三件事
 
@@ -424,7 +433,8 @@ placeholder 是 AppAuth/Auth0 在海量设备上验证过的同款机制，无 A
 
 ## 9. 依赖红线怎么处理
 
-`androidx.browser` 与 README「设计红线」的「仅此三个」冲突。**建议修订红线而不是违反它**，
+`androidx.browser` 只进可选浏览器模块（§5.2），**核心 artifact 的依赖仍是那三个、
+一个不多**。红线仍需修订表述（可选平台模块也是本库的一部分），但修订幅度更小了：
 因为红线的理由（「auth 库是供应链攻击的最高价值目标」）对它不成立：
 
 | | 第三方库 | `androidx.browser` |
@@ -432,8 +442,8 @@ placeholder 是 AppAuth/Auth0 在海量设备上验证过的同款机制，无 A
 | 维护方 | 任意 | Google / AndroidX，与 Android SDK 同一信任级别 |
 | 是否已在消费方 classpath | 未必 | 几乎所有 Android App 都有 |
 
-修订后的表述：**common 层仍是那三个；平台层只允许该平台的一等公民 API（AndroidX、
-Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
+修订后的表述：**核心 artifact 仍是那三个；可选平台模块只允许该平台的一等公民 API
+（AndroidX、Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 
 （回跳解析用的 ktor `parseQueryString` 不涉红线：`ktor-client-core` 本就是三依赖之一，
 `io.ktor.http` 随它在 classpath 上，且解码是纯内部实现、不进公开契约。）
@@ -444,7 +454,7 @@ Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 |---|---|---|
 | **0** | 第 8 节的三项 spike | 一份结论，决定 1/2 期的实现细节 |
 | **1** | `commonMain`：`OAuthOutcome`、`handleOAuthCallback`（含 otc 幂等 + ktor 解析）、`oauthResults` + `consumeOauthResult` | 零新依赖，纯单测（喂 URL 断言结果；幂等与 consume 按预记的反向验证点先破坏再恢复），**先于任何 Android 代码落地** |
-| **2a** | `androidMain` 完整拓扑：中转页 + 管理页 + Custom Tab / 系统浏览器回退 + 取消分层 + placeholder/meta-data | 引入 `androidx.browser`，红线同步修订。**这一步即可独立跑通除 Auth Tab 外的全部路径**（§11 差异 #3 的七条推演） |
+| **2a** | **新建 browser 模块**（§5.2）：中转页 + 管理页 + Custom Tab / 系统浏览器回退 + 取消分层 + placeholder/meta-data | 引入 `androidx.browser`（仅此模块），红线同步修订。**这一步即可独立跑通除 Auth Tab 外的全部路径**（§11 差异 #3 的七条推演） |
 | **2b** | Auth Tab 优先级（管理页内 `ActivityResultLauncher`） | 纯增强：少一次任务切换、少一个 Intent 暴露面。做不成不影响可用性 |
 | **3** | README 接入指南更新 + 限制说明 + 症状→原因映射表 | |
 
@@ -474,7 +484,7 @@ Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 三态回跳解析。所以 #26 的性质是「把已验证的实现下沉进库并补齐库特有的部分」，
 不是从零设计——但也**不是照抄**：它是 App 层实现，若干选择在库层不成立。
 
-## 差异与裁决状态（对照发现八条 + 校准中新发现一条）
+## 差异与裁决状态（对照发现八条 + 校准/评审中新发现两条）
 
 | # | 决策点 | 本文原设计 | TrendingAI | AppAuth | 裁决 | 状态 |
 |---|---|---|---|---|---|---|
@@ -487,6 +497,7 @@ Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 | 7 | 幂等 / replay | 记住最后 otc | `resetReplayCache()` | — | **两个机制各司其职**（前者防重复打服务端，后者防重复送 UI） | ✅ 已对齐 |
 | 8 | URL 解码 | 未提 | 手写 20 行 percent-decoder | — | 用 ktor 的 `parseQueryString()`（既有依赖），畸形输入裁为 `Unrecognized` | ✅ 已对齐 |
 | 9 | 浏览器回退链（校准 #3 时新发现） | Auth Tab → 系统浏览器（两极，未论证） | CCT 探测失败落 ACTION_VIEW | CCT 优先 | **Auth Tab → CCT → 系统浏览器** | ✅ 已对齐 |
+| 10 | 浏览器环节的分发形态（评审中新发现） | 单 artifact（隐含） | 单 App 无此问题 | 单 artifact + FAQ 教手动 remove | **独立可选 artifact** | ✅ 已对齐 |
 
 > 逐条对齐时都要**带一个具体场景**说明校准方案，不要只给结论。
 
@@ -997,3 +1008,52 @@ otc 去重管不到 `Linked`/`Cancelled` 的重放，consume 也拦不住自己�
 手写路径把非 BMP 字符逐 surrogate 编码，UI 显示 `??` 乱码，且没人会想到测 emoji。
 反向的恶意输入：别的 App 向中转页塞 `?error=%zz`——手写版静默当字面量放行（问题被
 掩盖），裁决版返回 `Unrecognized`，开发者在结果通道里直接看到异常输入。
+
+## 差异 #10 的完整结论（评审中新发现，已对齐）
+
+### 背景
+
+差异 #1 裁定 placeholder「忘配即构建失败」时只论证了**使用者**视角。正文重写时发现
+被漏掉的另一半：本库的社交登录是**可选功能**（核心是邮箱验证码），而中转页的
+intent-filter + placeholder 会合并进**所有**消费方——不用社交登录的消费方也会因
+placeholder 缺失构建失败。
+
+参考实现的实证（Auth0 官方 FAQ 第 3 条，已核对原文）：Auth0 与本库处境相同（web
+认证可选、placeholder 在库 manifest），他们的单 artifact 形态迫使官方写 FAQ 教
+不用 web 认证的消费方**手动在 manifest 里 `tools:node="remove"` 两个 Activity**——
+一个「可选功能」需要不使用者动手排雷，这本身就是形态错误的症状。
+
+### 问题
+
+单 artifact 把浏览器环节强加给所有消费方，不用社交登录的人要么撞上与自己毫无关系的
+构建报错（`requires a placeholder substitution`），要么去学 FAQ 手动移除库的内部
+Activity。「一行占位值」的文档逃生舱可以缓解，但 Auth0 的 FAQ 证明这条路的终点就是
+FAQ 本身。
+
+### 方案
+
+1. **浏览器环节拆独立可选 artifact**（暂名 `loginbase-kt-browser`，Android-only，
+   同仓同版本发布）：两个 Activity、manifest 声明 + placeholder + meta-data、三级
+   回退链、`signIn()/link()` 扩展、`androidx.browser` 依赖全在其中。核心 artifact
+   零变化，不用社交登录的消费方零感知
+2. **依赖方向约束**：停泊槽住核心（browser 模块写入、核心 `restore()` 排空），
+   保持 browser → core 单向
+3. **红线收益**：核心 artifact 的依赖仍是那三个、一个不多；§9 的红线修订幅度缩小为
+   「可选平台模块允许平台一等公民 API」
+4. **模块化原则**（一并裁定）：按**机制**分模块，不按 provider 分。客户端是服务端流、
+   provider 无关，走浏览器流的所有 provider 共享同一套零增量代码（接入方只接 GitHub
+   不会「带进」任何 Google 的东西——库里本就不存在 per-provider 代码）；将来若引入
+   需要原生 SDK 的通路（如 Google Credential Manager），各自独立成可选模块
+5. 消费方成本变化：用社交登录者 +1 行依赖声明；不用者从「构建失败/学 FAQ」变为零
+
+### 场景
+
+只用邮箱验证码的消费方引入核心库：
+
+| 形态 | 他的遭遇 |
+|---|---|
+| 单 artifact（AppAuth/Auth0 现状） | 构建失败，报错指向一个他从没听说过的 placeholder；搜索半天找到 FAQ，往自己的 manifest 里抄两段 `tools:node="remove"` |
+| 独立可选 artifact（裁决） | 什么都不发生——他根本不知道浏览器模块存在 |
+
+反向核对拆分的代价：用社交登录的消费方多写一行依赖声明；库多一个发布单元（同仓
+同版本，CI 一起发）。两边都可接受。
