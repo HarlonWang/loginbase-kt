@@ -414,22 +414,34 @@ data-first 是刻意的：Android 14 按 #977 的行为把管理页**重建而�
    RFC 8252 明确承认的固有弱点，也是优先走 Auth Tab（不发 Intent）的理由之一；另外 otc
    60 秒单次有效，即便被截也只有一次窗口。发起前自检（§5.3 第 2 层）能就地报出抢注
 
-## 8. 落地前必须先 spike 的三件事
+## 8. 三项真机验证（原 spike 清单，已于 2026-08-15 验收）
 
-**这些的结论会改变实现细节（不改架构），未验证前不要动手。**
+> 应决策，spike 未单独先行，改为随 2a 实现一起在**生产环境验收**（验收载体 =
+> TrendingAI 实际接入，模拟器 Pixel 9 / Android 16 / Play 镜像，真实 GitHub 账号）。
 
-| # | 要验证什么 | 若答案不利 |
+| # | 要验证什么 | 结果 |
 |---|---|---|
-| 1 | **管理页冷启动分支的真机行为**：进程被回收后回跳 → 停泊 → 起 launcher，用户看到的是不是正常冷启动，返回键行为对不对 | 调起 launcher 的细节（flags 等），不影响架构 |
-| 2 | **Android 14+ 开「不保留活动」验证重建路径**：#977 场景下 data-first 状态机真实走通 | 补管理页的状态恢复逻辑，架构不变 |
-| 3 | **Auth Tab 的 callback 能否扛住进程死亡**，以及可用性检测的准确 API | **风险已被中转页/管理页兜住**：扛不住就落到 §6.3 的时序。只影响「多数情况下走哪级链」，不影响架构 |
+| 1 | **管理页冷启动分支的真机行为**：进程被回收后回跳 → 停泊 → 起 launcher | ✅ force-stop 后发回跳：中转页冷启动（新进程）→ 管理页新建、静态槽空 → 停泊 → `getLaunchIntentForPackage` **正确解析到动态图标的 activity-alias**（MainActivityBerry）→ MainActivity 冷启动（+1.66s）→ `restore()` 排空。用户观感就是一次干净的冷启动 |
+| 2 | **「不保留活动」验证重建路径**：#977 场景下 data-first 状态机真实走通 | ✅ 开「不保留活动」跑完整真实登录：管理页在浏览器覆盖期间被系统销毁，转发时**重建新实例**（logcat `Displayed +474ms`）→ data-first 投递 → 登录成功落盘。#977 免疫实测成立 |
+| 3 | **Auth Tab 的 callback 能否扛住进程死亡**，以及可用性检测 API | ⬜ 留 2b 期验证；风险已被中转页/管理页兜住，只影响走哪级链 |
+
+同场验收通过的其余路径：真实 GitHub 登录成功链（服务端 302 → 授权 → 回跳 →
+中转页 → CLEAR_TOP 转交 → 兑换落盘 → UI 就位）；取消（用户停留浏览器后返回 →
+管理页 resume 判 `Cancelled` → 登录面板按钮复位，旧实现的「永远转圈」坑位）；
+陈旧回跳链接（伪 otc 静默 `Failed`，不崩、不打扰、登录态不动）；发起前自检与
+debug 日志打印。
+
+**遗留待查/待验**（不阻塞 2a）：
+
+- 模拟器上 `CustomTabsIntent` 呈现为**完整 Chrome 标签页**而非 CCT 框（疑与 Chrome
+  首启流程或 Android 16 行为有关）。功能不受影响（回位、取消均验过），形态原因待查
+- 「CCT 探测失败落系统浏览器」在只有 Chrome 的模拟器上无法自然触发，留真机
+  （无 CCT provider 的国产 ROM）补验
+- link 绑定流程未验：验收账号已绑定 GitHub，入口不出现；待解绑或用第二账号补验
 
 原「AGP 允不允许库 manifest 用 `${applicationId}`」随差异 #1 撤回该方案而消失——
-placeholder 是 AppAuth/Auth0 在海量设备上验证过的同款机制，无 AGP 未知数。
-原「`ActivityResultLauncher` 能否在 suspend 里注册」随差异 #3 消失——launcher 注册在
-管理页自己的 `onCreate`，与消费方 Activity 无关。
-
-三项建议在同一个 spike App 里一次验完。文中 API 形态刻意没写死具体签名，以实测为准。
+placeholder 是 AppAuth/Auth0 在海量设备上验证过的同款机制，无 AGP 未知数（实测
+构建通过）。原「`ActivityResultLauncher` 能否在 suspend 里注册」随差异 #3 消失。
 
 ## 9. 依赖红线怎么处理
 
