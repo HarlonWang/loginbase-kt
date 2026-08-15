@@ -387,7 +387,7 @@ Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 | 1 | scheme 怎么传 | `${applicationId}` | placeholder + `buildConfigField` 双喂 | `${appAuthRedirectScheme}` placeholder | **placeholder + `<meta-data>`** | ✅ 已对齐 |
 | 2 | 中转页 launchMode | `singleTask` | `standard` | **无（默认 standard）** | **不写**（standard） | ✅ 已对齐 |
 | 3 | 怎么回到 App | `isTaskRoot` 分支 | `REORDER_TO_FRONT` | 转交管理 Activity → `PendingIntent` | **库内管理页 + 中转页转发**（AppAuth/Auth0 拓扑，消费方零接线） | ✅ 已对齐 |
-| 4 | redirect 形态 | 带 host | `scheme:/path` 无 host | 不限定 | 无 host（RFC 8252 §7.1 示例形态） | ⬜ 待对齐 |
+| 4 | redirect 形态 | 带 host | `scheme:/path` 无 host | 不限定 | 无 host（RFC 8252 §7.1 示例形态） | ✅ 已对齐 |
 | 5 | 结果通道 | 双通道（返回值 + flow） | 单通道（bus） | 单通道（PendingIntent） | **单通道**，且 `signIn()` 可不必挂起 | ⬜ 待对齐 |
 | 6 | 取消检测 | 「做不到」 | ON_RESUME + `hasPending` | `canceledIntent` | **分层**：库拥有启动时是确定信号，纯浏览器兜底才用启发式 | ⬜ 待对齐 |
 | 7 | 幂等 / replay | 记住最后 otc | `resetReplayCache()` | — | **两个机制各司其职**（前者防跨通路重复，后者防陈旧 replay） | ⬜ 待对齐 |
@@ -641,3 +641,41 @@ App 可向它发伪造 intent。两家都拆成两个，不是巧合。
    管理页重建的测试必须变红
 2. 把停泊判定从「静态槽里有无在途 AuthClient」改成任务/栈状态判断 → 进程回收冷启动
    的测试必须变红
+
+## 差异 #4 的完整结论（已对齐）
+
+### 裁决
+
+**维持初裁：无 host 单斜杠形态。** 库的默认 redirect 为 `<scheme>:/loginbase/callback`，
+撤回正文的 `cn.trendingai://loginbase/callback`（双斜杠，`loginbase` 落在 host 位）。
+库 manifest 的 filter 只声明 scheme（#1/#2 草图已如此）；debug/release 靠独立 scheme
+隔离（§5.3 已有，与 TrendingAI 注释互证）。
+
+### 为什么
+
+四方证据同向：
+
+- **RFC 8252 §7.1 的示例形态**就是单斜杠：`com.example.app:/oauth2redirect/...`
+- **host 位在 private-use scheme 里没有所有权语义**（TrendingAI gradle 注释原文）——
+  纯字符串，任何截胡 App 照抄整个 URI 即可，它带来的全部「可以收窄」的安全感都是假的
+- **客户端 filter 本来就只认 scheme**：Android `<data>` 规则是「没有 host 时所有 path
+  属性都被忽略」（TrendingAI manifest 注释原文），无 host 时 scheme 是唯一过滤维度；
+  AppAuth 的 filter 同样只按 scheme（已逐字核对）——参考实现也没给 host 位任何角色。
+  真正的白名单校验只发生在服务端
+- **服务端零成本**（`github.ts` 的 `redirectAllowed()` 已核对）：结构化校验
+  `new URL()` + protocol/host 精确 + path 前缀，无 host 形态解析出空 host，精确匹配
+  照常成立；TrendingAI 的 `AUTH_DEEPLINKS` 生产白名单里存的已全是无 host 条目
+
+迁移零负担：TrendingAI 的手写实现（`/auth/callback`）未发布过，接库时直接改用库默认
+redirect、服务端白名单同步替换即可，无新旧共存问题。
+
+### 场景
+
+接入方照文档给服务端配白名单，手一抖把库上报的 `cn.trendingai:/loginbase/callback`
+抄成双斜杠 `cn.trendingai://loginbase/callback`。服务端结构化校验里前者 host 为空、
+后者 host 是 `loginbase`——精确匹配失败，用户点登录，**授权还没开始就 400
+`invalid_redirect`**，而开发者盯着两个肉眼几乎相同的字符串看不出差别。
+
+无 host 裁决把「几个斜杠」从「必须记对的细节」变成「只有一种写法」；配合 #1 的
+`redirectUri()` 一键可查，这个坑只剩复制粘贴层面的残余概率。#1 的「症状 → 原因」
+映射表落地时补一行：**invalid_redirect 且字符串肉眼相同 → 数斜杠**。
