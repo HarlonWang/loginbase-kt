@@ -388,7 +388,7 @@ Apple 系统框架）**。supabase-kt 的 `Auth` 模块就是这个分法。
 | 2 | 中转页 launchMode | `singleTask` | `standard` | **无（默认 standard）** | **不写**（standard） | ✅ 已对齐 |
 | 3 | 怎么回到 App | `isTaskRoot` 分支 | `REORDER_TO_FRONT` | 转交管理 Activity → `PendingIntent` | **库内管理页 + 中转页转发**（AppAuth/Auth0 拓扑，消费方零接线） | ✅ 已对齐 |
 | 4 | redirect 形态 | 带 host | `scheme:/path` 无 host | 不限定 | 无 host（RFC 8252 §7.1 示例形态） | ✅ 已对齐 |
-| 5 | 结果通道 | 双通道（返回值 + flow） | 单通道（bus） | 单通道（PendingIntent） | **单通道**，且 `signIn()` 可不必挂起 | ⬜ 待对齐 |
+| 5 | 结果通道 | 双通道（返回值 + flow） | 单通道（bus） | 单通道（PendingIntent） | **单通道**，`signIn()` 不挂起 | ✅ 已对齐 |
 | 6 | 取消检测 | 「做不到」 | ON_RESUME + `hasPending` | `canceledIntent` | **分层**：库拥有启动时是确定信号，纯浏览器兜底才用启发式 | ⬜ 待对齐 |
 | 7 | 幂等 / replay | 记住最后 otc | `resetReplayCache()` | — | **两个机制各司其职**（前者防跨通路重复，后者防陈旧 replay） | ⬜ 待对齐 |
 | 8 | URL 解码 | 未提 | 手写 20 行 percent-decoder | — | 用 ktor 的 `decodeURLQueryComponent()`（既有依赖） | ⬜ 待对齐 |
@@ -679,3 +679,58 @@ redirect、服务端白名单同步替换即可，无新旧共存问题。
 无 host 裁决把「几个斜杠」从「必须记对的细节」变成「只有一种写法」；配合 #1 的
 `redirectUri()` 一键可查，这个坑只剩复制粘贴层面的残余概率。#1 的「症状 → 原因」
 映射表落地时补一行：**invalid_redirect 且字符串肉眼相同 → 数斜杠**。
+
+## 差异 #5 的完整结论（已对齐）
+
+> 从本条起，结论小节统一按「背景 → 问题 → 方案 → 场景」组织（#1–#4 保持原格式不回改）。
+
+### 背景
+
+- **正文（§5.1/5.2）**：双通道。`suspend fun signIn(...): OAuthOutcome` 挂起到有结果，
+  同时 `oauthResults: SharedFlow`（replay=1）广播——且正文自己承认后者是必需的
+  （KDoc 原文：进程回收后「结果只能从这里拿」）
+- **TrendingAI**：单通道。`OauthCallbackBus`（`MutableSharedFlow(replay = 1,
+  extraBufferCapacity = 1)`），发起侧开完浏览器即返回，**没有任何挂起等结果的调用**；
+  登录面板、绑定页全部 `collect` 总线收结果，连「面板还开着」的热路径也不例外
+  （注释原文：「面板此时通常还开着，故由面板自己收尾最自然」）
+- **AppAuth**：单通道。结果只经 PendingIntent 投递，发起调用即返回
+- **#3 的管理页拓扑**：所有路径的结果汇进管理页的单一投递漏斗，投递目标天然是一个
+
+### 问题
+
+双通道的实质是「一条必需 + 一条糖」，而糖在两个常见情形下是坏的：
+
+1. **config change 就能打断返回值通道**：挂起的 `signIn()` 活在页面协程作用域里，
+   用户在浏览器授权期间屏幕一转（或切深色模式、分屏），Activity 重建、作用域取消、
+   挂起点随之取消——返回值永远不来。连进程死亡都不需要
+2. **进程回收下它必死**（§6.3 已论证）
+
+于是消费方无论如何都必须正确实现 flow 路径，返回值通道唯一的作用是引诱人只写
+`val outcome = signIn(...)` 这条好看的路、漏写 flow 路径——又是「多数时候能跑、
+分岔只在边角出现」的陷阱（#2 同款）。同一结果走两条通道还带来 UI 重复反应的可能。
+
+### 方案
+
+1. **单通道，撤回双通道**：消费方结果面只有 `oauthResults: SharedFlow<OAuthOutcome>`
+   （replay=1）。观察它本来就在接入指南里（§5.4 已注明不计入接线成本）
+2. **`signIn()/link()` 改为非挂起**、fire-and-forget：启动管理页即返回 `Unit`
+   （TrendingAI 与 AppAuth 的发起侧同形）
+3. **`handleOAuthCallback(url)` 保留 suspend + 返回值**（给直接调用方：自定义流程、
+   iOS 占位、测试），但**必同时发一份到 `oauthResults`**——投递点全库只此一处，
+   两条通路 + 冷启动 + 管理页漏斗全部汇于此。文档写明：UI 只看 flow，返回值是给
+   调用它的那一方的
+4. `Cancelled` 同样走这条通道（管理页判取消后投递），不设第二套取消处理
+5. TrendingAI 的 `hasPending` / `consume()`（防误判、防陈旧 replay）是通道的运营语义，
+   归 #7 裁
+
+### 场景
+
+用户点「GitHub 登录」跳去浏览器，授权期间手机竖屏转横屏，回跳送达：
+
+| 设计 | 返回值通道 | flow 通道 | 消费方为写对要做的事 |
+|---|---|---|---|
+| 双通道（正文） | 协程随 Activity 重建被取消，**永远不返回** | 正常送达 | 两条都处理，还要防 UI 反应两次 |
+| 单通道（裁决） | 不存在 | 正常送达（replay=1 兜住重建后再订阅） | 只写一处 collect |
+
+TrendingAI 的实测佐证：其全部三个消费场景（登录面板热路径、绑定页、进程回收冷启动）
+全走总线，没有一处需要挂起返回值——「挂起等结果」在真实 App 里是个没有需求的 API。
