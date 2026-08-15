@@ -442,6 +442,19 @@ debug 日志打印。
   真实登录成功与「返回判取消」均实测通过
 - link 绑定流程未验：验收账号已绑定 GitHub，入口不出现；待解绑或用第二账号补验
 
+**国产 ROM 真机补验（小米 13 / HyperOS(Android 16) / 无 Chrome，2b 期同日）**：
+
+- **tier 探测**：设备无 Chrome，但第三方轻量浏览器 Via（`mark.via`）实现了
+  CustomTabsService——探测正确命中 `CUSTOM_TAB (provider = mark.via)`。修正差异 #9
+  的预设：「无 Chrome 国产机」不必然落系统浏览器，第三方浏览器可能供 CCT
+- **MIUI 链式启动管控**：拉起浏览器前系统插一道「启动应用」用户弹窗。对库透明——
+  允许则流程照常；拒绝的表现等同用户取消（返回 App 时管理页判 `Cancelled`），语义恰好正确
+- **CCT 关闭取消**：Via 的 CCT 框（× + 只读地址栏）点 × → 回 App 收到确定
+  `Cancelled`、面板复位——此前模拟器上因 GitHub 已授权自动跳转太快无法验到的形态
+- **成功链**：CCT → 302 → GitHub 授权 → 回跳 → 兑换落盘全链走通（需设备侧代理：
+  无代理时 GitHub TLS 层被干扰、302 链停在空白页——对照实验证实与库/服务端无关，
+  属 GitHub OAuth 对国内用户的既有现实）
+
 原「AGP 允不允许库 manifest 用 `${applicationId}`」随差异 #1 撤回该方案而消失——
 placeholder 是 AppAuth/Auth0 在海量设备上验证过的同款机制，无 AGP 未知数（实测
 构建通过）。原「`ActivityResultLauncher` 能否在 suspend 里注册」随差异 #3 消失。
