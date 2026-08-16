@@ -56,6 +56,11 @@ ktor 的 `Auth` 插件也内建单飞，但它只协调**装了该插件的那�
 这样用是安全的：本库只收 engine、`HttpClient` 自建（见第 3 节），装了 `Auth` 插件的
 那个 client 不会参与本库的 `POST /refresh`，不存在递归调用撞上不可重入锁的问题。
 
+残留的一点浪费：多个业务 client 且 401 **错开**发生时，会多一次令牌轮换（不烧救活配额，
+用的是有效令牌）。想连这次也省掉，可以在 `refreshTokens` 里先比对 `oldTokens?.accessToken`
+与 `auth.accessToken()`——不一样就说明别人已经刷过了，直接用新的。属于可选优化，
+不做也只是多一次正常轮换。
+
 ## 2. 为什么不解析 JWT
 
 库拿到 access token 后原样存、原样用，不读 `exp`、不校验签名。
@@ -133,3 +138,37 @@ TTL 调到 4 小时，登出后旧令牌就能再活 4 小时。那是拿安全�
 
 参照：supabase-kt 当年也是把 `SessionStatus.NetworkError` 重设计成 `RefreshFailure`，
 并用 `NotAuthenticated(isSignOut: Boolean)` 区分登出来源。
+
+## 6. 依赖红线
+
+**核心 artifact = `ktor-client-core` + `kotlinx-serialization-json` +
+`kotlinx-coroutines-core`，仅此三个。** 可选平台模块只允许**该平台的一等公民 API**
+（`loginbase-kt-browser` 的 `androidx.browser` / `kotlinx-coroutines-android`——AndroidX
+与 JetBrains，信任级别同系统 SDK；supabase-kt 的 `Auth` 模块同此分法）。
+
+具体地：
+
+- 不用 `ktor-client-content-negotiation` / `ktor-serialization-kotlinx-json`：请求体手工
+  序列化、响应手工解析
+- 不用 `multiplatform-settings`：存两个字符串而已，平台实现各十几行（Android
+  `SharedPreferences`、iOS `NSUserDefaults`），且**落盘的同步性是与服务端救活机制配套的
+  关键语义**，不该藏在第三方库的默认参数里
+- 不带 HTTP engine：消费方提供（`HttpClient` 由库自建，见第 3 节）
+- **不含 UI**：登录界面归各 App 实现
+
+加任何新依赖前先停下来问一遍值不值——auth 库是供应链攻击的最高价值目标。
+
+## 7. iOS target 为什么是占位
+
+`iosArm64` / `iosSimulatorArm64` 两个 target 存在，但**长期只作占位，不承诺可用**。保留
+它们的实际作用只有一个：让 `commonMain` 在编译期就被约束住，不会悄悄写死 JVM API。
+
+除此之外不要按「支持 iOS」来接入，三条缺口都还在：
+
+- `NSUserDefaultsTokenStore` 与 iOS 侧的语言取值**从未在真机链路上验证过**
+- **没有做 Swift 互操作保障**：public suspend 函数没标 `@Throws`，Swift 侧遇到
+  `LoginbaseException` 是直接崩溃而不是抛 Swift error；`authState` 是 Kotlin
+  `StateFlow`，Swift 里也拿不到
+- CI 不跑 iOS 测试（`commonTest` 只在 Android 上跑过）
+
+转正条件就是把这三条补齐。在那之前，iOS 侧的社交登录仍是 `signInUrl()` + 自己开浏览器。
