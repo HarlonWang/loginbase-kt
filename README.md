@@ -197,6 +197,11 @@ auth.oauthResults.collect { outcome ->
 用户关掉授权页会收到**确定的 `Cancelled`**——不需要再写 `ON_RESUME` 启发式去猜
 「人是不是从浏览器空手回来了」。
 
+**依赖姿势**：本模块建议只由 App 模块（持有 Activity 的那层）依赖；共享逻辑层想发起
+OAuth 用注入点解耦（`var launcher: ((AuthClient, Mode) -> Boolean)?`，App 启动时注入）。
+中间模块直接依赖会把本模块的 manifest（含 placeholder）合并进它们的单测 manifest，
+test 任务会因占位符无值而构建失败（症状表最后一行）。
+
 ### 服务端白名单：三处一致
 
 同一个 redirect 要在三处一致，而写错的地方和报错的地方对不上：
