@@ -67,20 +67,32 @@ fun LoginbaseException.oauthFailureReason(): String = when (this) {
     is LoginbaseException.NotAuthenticated -> "not_authenticated"
 }
 
+/** 停泊槽里的内容：一次流程的结局，要么是待兑换的回跳，要么是已定的结果。 */
+internal sealed interface ParkedResult {
+    data class Callback(val url: String) : ParkedResult
+    data class Outcome(val outcome: OAuthOutcome) : ParkedResult
+}
+
 /**
- * 进程被回收后的回跳停泊槽：管理页写入、[AuthClient.restore] 排空。
- * 住核心以保持 browser → core 单向依赖；单槽后到覆盖先到。
+ * 进程被回收后的结局停泊槽：管理页写入、[AuthClient.restore] 排空。
+ * 住核心以保持 browser → core 单向依赖；单槽，**回跳优先于结果**——
+ * 成功的证据比「用户放弃了」的推断更可信。
  */
 internal object OAuthCallbackParking {
     @Volatile
-    private var parked: String? = null
+    private var parked: ParkedResult? = null
 
     fun park(url: String) {
-        parked = url
+        parked = ParkedResult.Callback(url)
+    }
+
+    fun park(outcome: OAuthOutcome) {
+        if (parked is ParkedResult.Callback) return
+        parked = ParkedResult.Outcome(outcome)
     }
 
     /** 取出并清空。写读各在一方（管理页写、restore 读），[Volatile] 保证可见性。 */
-    fun take(): String? = parked.also { parked = null }
+    fun take(): ParkedResult? = parked.also { parked = null }
 }
 
 /** 配套模块的跨 artifact 挂点（见 [LoginbaseInternalApi]）。消费方代码不该引用它。 */
@@ -90,5 +102,13 @@ object LoginbaseModuleBridge {
     /** 浏览器模块冷启动通路专用：把回跳 URL 停进 [OAuthCallbackParking]。 */
     fun parkOAuthCallback(url: String) {
         OAuthCallbackParking.park(url)
+    }
+
+    /**
+     * 同上，但停的是已定的结果（取消、失败）——这类结局没有 URL 可兑换，
+     * 不停泊就会在进程被回收的流程里静默丢失，UI 永远等不到结果。
+     */
+    fun parkOAuthOutcome(outcome: OAuthOutcome) {
+        OAuthCallbackParking.park(outcome)
     }
 }

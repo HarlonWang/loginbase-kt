@@ -272,4 +272,32 @@ class OAuthCallbackTest {
         client.restore()
         assertEquals(1, calls)
     }
+
+    @Test
+    fun `restore 排空停泊的结果`() = authTest {
+        // 取消/失败没有 URL 可兑换，不停泊就在进程被回收的流程里丢了，UI 永远等不到结果
+        val (client, _) = clientWith(InMemoryTokenStore()) { error("不该有网络请求") }
+
+        OAuthCallbackParking.park(OAuthOutcome.Cancelled)
+        client.restore()
+
+        assertEquals(OAuthOutcome.Cancelled, client.oauthResults.first())
+    }
+
+    @Test
+    fun `回跳优先于结果 - 成功的证据压过放弃的推断`() = authTest {
+        var calls = 0
+        val (client, _) = clientWith(InMemoryTokenStore()) {
+            calls++
+            respond(tokensJson("1"), HttpStatusCode.OK, jsonHeaders())
+        }
+
+        // 两条通路可能都投：Auth Tab 判了取消，回跳却随后送达
+        OAuthCallbackParking.park("$callback?otc=parked")
+        OAuthCallbackParking.park(OAuthOutcome.Cancelled)
+        client.restore()
+
+        assertEquals(1, calls, "回跳没被取消覆盖掉")
+        assertIs<OAuthOutcome.SignedIn>(client.oauthResults.first())
+    }
 }

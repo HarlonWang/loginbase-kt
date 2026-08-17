@@ -162,9 +162,15 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
         }
     }
 
+    /** 与 [deliver] 同构：App 活着直接投递，进程被回收（槽空）则停泊，冷启动时排空。 */
     private fun publishAsync(outcome: OAuthOutcome) {
-        val client = OAuthFlowRuntime.activeClient ?: return
-        OAuthFlowRuntime.scope.launch { client.publishOAuthOutcome(outcome) }
+        val client = OAuthFlowRuntime.activeClient
+        if (client != null) {
+            OAuthFlowRuntime.scope.launch { client.publishOAuthOutcome(outcome) }
+        } else {
+            LoginbaseModuleBridge.parkOAuthOutcome(outcome)
+            packageManager.getLaunchIntentForPackage(packageName)?.let { startActivity(it) }
+        }
     }
 
     internal companion object {

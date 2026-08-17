@@ -113,7 +113,11 @@ class AuthClient(
         val state = if (tokenStore.load() != null) AuthState.SignedIn
         else AuthState.SignedOut(SignOutReason.NoSession)
         _authState.value = state
-        OAuthCallbackParking.take()?.let { handleOAuthCallback(it) }
+        when (val parked = OAuthCallbackParking.take()) {
+            is ParkedResult.Callback -> handleOAuthCallback(parked.url)
+            is ParkedResult.Outcome -> publish(parked.outcome)
+            null -> Unit
+        }
         return _authState.value
     }
 
