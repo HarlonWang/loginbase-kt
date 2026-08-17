@@ -4,9 +4,10 @@ package wang.harlon.loginbase
  * 本客户端实现的服务端协议版本。协议权威是服务端仓的 `docs/protocol.md`，本仓不留副本。
  *
  * **刻意不是 `const val`**：`const` 会被内联进消费方字节码，升级本库不重编译时读到旧值，
- * 恰好毁掉本常量的用途；普通 `val` 走 getter，永远反映实际链接的版本。
+ * 恰好毁掉本常量的用途。写成显式 getter 而非带 backing field 的 `val`，是为了让
+ * 「不可内联」在语法上就成立——IDE 不会再劝改 const，也就没人会顺手采纳。
  */
-val PROTOCOL_VERSION: String = "1.3.0"
+val PROTOCOL_VERSION: String get() = "1.3.0"
 
 /**
  * 协议错误码（`{"error": "..."}` 的取值），与 protocol.md 错误码总表一一对应；
