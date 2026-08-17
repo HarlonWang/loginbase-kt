@@ -5,14 +5,14 @@ kotlin = "2.4.10"
 android-minSdk = "24"
 android-compileSdk = "37"
 vanniktechMavenPublish = "0.37.0"
-ktor = "3.5.1"
+ktor = "3.5.2"
 kotlinx-serialization = "1.11.0"
 kotlinx-coroutines = "1.11.0"
 # browser 模块专用（可选 artifact，核心的依赖最小集不含它）
-androidx-browser = "1.9.0"
+androidx-browser = "1.10.0"
 # Auth Tab 的 ActivityResultLauncher 需要 ComponentActivity（browser 模块直接引用其类型，显式声明不吃传递）
-androidx-activity = "1.9.3"
-androidx-core = "1.13.0"
+androidx-activity = "1.13.0"
+androidx-core = "1.19.0"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
