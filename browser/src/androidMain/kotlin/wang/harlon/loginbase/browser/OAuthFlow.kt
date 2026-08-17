@@ -24,7 +24,7 @@ import wang.harlon.loginbase.OAuthProvider
  * @param redirect 不传则由 manifest 的 meta-data 推导（[Loginbase.redirectUri]），
  *   与 intent-filter 同源；自建 scheme / https app-link 才需要显式传
  */
-public fun AuthClient.signIn(
+fun AuthClient.signIn(
     activity: Activity,
     provider: OAuthProvider,
     redirect: String = Loginbase.redirectUri(activity),
@@ -36,7 +36,7 @@ public fun AuthClient.signIn(
  * 已登录用户绑定第二身份：登录/绑定回跳的差异由库分辨，消费方在同一个
  * [AuthClient.oauthResults] 里拿 [wang.harlon.loginbase.OAuthOutcome.Linked]。其余同 [signIn]。
  */
-public fun AuthClient.link(
+fun AuthClient.link(
     activity: Activity,
     provider: OAuthProvider,
     redirect: String = Loginbase.redirectUri(activity),
@@ -49,7 +49,7 @@ public fun AuthClient.link(
  * scheme 读自 manifest meta-data，与中转页 intent-filter 同一个 placeholder。
  * **服务端白名单要配的就是这个值**（debug/release 变体各一条）。
  */
-public fun Loginbase.redirectUri(context: Context): String =
+fun Loginbase.redirectUri(context: Context): String =
     "${redirectScheme(context)}:/loginbase/callback"
 
 private fun redirectScheme(context: Context): String {
