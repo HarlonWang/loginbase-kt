@@ -705,6 +705,21 @@ class AuthClientTest {
     }
 
     @Test
+    fun `signOut 与 signOutAll 打不同的端点`() = authTest {
+        // 两者只差 URL 这一个字符串，拼错了「登出所有设备」会静默退化成登出当前会话
+        val seen = mutableListOf<String>()
+        fun clientRecording() = clientWith(InMemoryTokenStore(TokenPair("a0", "r0"))) {
+            seen += it.url.toString()
+            respond("", HttpStatusCode.OK)
+        }.first
+
+        clientRecording().signOut()
+        clientRecording().signOutAll()
+
+        assertEquals(listOf("$BASE/sessions", "$BASE/sessions/all"), seen)
+    }
+
+    @Test
     fun `没调 restore 时，accessToken 顺手把状态补齐`() = authTest {
         // 否则两个对外信号会互相矛盾：authState 说 Unknown，而 accessToken 已经能
         // 返回有效令牌，且没有任何机制提醒调用方漏了 restore()

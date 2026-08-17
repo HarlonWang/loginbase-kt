@@ -16,8 +16,6 @@ sealed class LoginbaseException(
         val error: AuthError,
         /** `too_many_requests` 才有 */
         val retryAfterSeconds: Int? = null,
-        /** `invalid_refresh_token` 才有 */
-        val refreshFailure: RefreshFailure? = null,
         /** 服务端原始 error 串，排查未认识的新错误码用 */
         val rawError: String = error.wire,
     ) : LoginbaseException("loginbase api error: $rawError (HTTP $status)")

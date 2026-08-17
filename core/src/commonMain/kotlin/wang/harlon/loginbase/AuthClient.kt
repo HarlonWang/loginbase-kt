@@ -500,8 +500,6 @@ class AuthClient(
                 status = response.status.value,
                 error = AuthError.fromWire(raw),
                 retryAfterSeconds = body?.intOrNull("retryAfterSeconds"),
-                refreshFailure = body?.stringOrNull("reason")
-                    ?.let { RefreshFailure.fromWire(it) },
                 rawError = diagnosable,
             )
         }
