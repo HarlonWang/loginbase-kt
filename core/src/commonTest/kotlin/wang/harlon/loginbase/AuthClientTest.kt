@@ -544,9 +544,9 @@ class AuthClientTest {
     @Test
     fun `signInUrl 对 deepLink 做 URL 编码`() {
         val client = AuthClient(BASE, InMemoryTokenStore())
-        val url = client.signInUrl(OAuthProvider.GitHub, "cn.trendingai://auth/callback")
+        val url = client.signInUrl(OAuthProvider.GitHub, "cn.example://auth/callback")
         assertEquals(
-            "$BASE/oauth/github/start?redirect=cn.trendingai%3A%2F%2Fauth%2Fcallback",
+            "$BASE/oauth/github/start?redirect=cn.example%3A%2F%2Fauth%2Fcallback",
             url,
         )
     }

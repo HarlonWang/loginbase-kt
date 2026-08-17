@@ -13,8 +13,7 @@ import platform.Foundation.NSUserDefaults
  * 未做 Keychain：与 Android 侧一致，保持 Logto 时代的存储强度；Keychain 需要
  * cinterop 与更多平台代码，确有需要的 App 自己实现 [TokenStore]。
  *
- * 注：TrendingAI 的 iOS 目前只是壳（CI 也不编 iOS），本实现是为 target 完整性
- * 与将来准备，尚未在真机链路上验证过。
+ * 注：本实现是为 target 完整性与将来准备，尚未在真机链路上验证过（CI 也不编 iOS）。
  */
 class NSUserDefaultsTokenStore(
     private val defaults: NSUserDefaults = NSUserDefaults.standardUserDefaults,

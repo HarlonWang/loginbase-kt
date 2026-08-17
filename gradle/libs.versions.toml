@@ -18,8 +18,7 @@ kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotl
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
-# engine 刻意不依赖：消费方各自提供（TrendingAI 已有 okhttp/darwin），
-# 库自带会重复引入，也违背依赖最小集
+# engine 刻意不依赖：消费方各自提供，库自带会重复引入，也违背依赖最小集
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
 # 仅测试用：验证 README 接入指南第 2 步那段 Auth 插件接线真能编译、真能跑通。

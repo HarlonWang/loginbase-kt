@@ -176,14 +176,14 @@ fun AuthClient.signIn(activity: Activity, provider: OAuthProvider, redirect: Str
 
 #### scheme 是什么
 
-`cn.trendingai:/loginbase/callback` 里的 `cn.trendingai` 就是 scheme，地位等同 `https`。
+`cn.example:/loginbase/callback` 里的 `cn.example` 就是 scheme，地位等同 `https`。
 区别是浏览器不认识它，会问系统「谁认领了这个 scheme」——**它是浏览器把控制权还给 App
 的唯一线索**：
 
 ```
-5. 服务端 302 → cn.trendingai:/loginbase/callback?otc=abc123
+5. 服务端 302 → cn.example:/loginbase/callback?otc=abc123
 6. 浏览器：这个 scheme 我不认识 → 问 Android
-7. Android：翻所有 App 的 manifest，找谁声明了 <data android:scheme="cn.trendingai" />
+7. Android：翻所有 App 的 manifest，找谁声明了 <data android:scheme="cn.example" />
 8. 拉起那个 Activity（本库的中转页），intent.data = 上面那个 URL
 ```
 
@@ -234,10 +234,10 @@ XML 都不写：
 
 ```kotlin
 defaultConfig {
-    manifestPlaceholders["loginbaseRedirectScheme"] = "cn.trendingai"
+    manifestPlaceholders["loginbaseRedirectScheme"] = "cn.example"
 }
 buildTypes.getByName("debug") {
-    manifestPlaceholders["loginbaseRedirectScheme"] = "cn.trendingai.debug"
+    manifestPlaceholders["loginbaseRedirectScheme"] = "cn.example.debug"
 }
 ```
 
@@ -275,7 +275,7 @@ host 时所有 path 属性都被忽略」，无 host 形态下 scheme 是唯一�
 3. **错误消息带上「另一半」**：客户端报错时必须提醒服务端白名单要填同一个值，并说明
    「两边不一致时浏览器停在 `invalid_redirect`，App 侧收不到任何信号」
 4. **让「该填给服务端什么」随手可查**：`Loginbase.redirectUri(context)` 一行返回
-   `cn.trendingai:/loginbase/callback`；debug 构建（`FLAG_DEBUGGABLE`）首次发起时自动打印
+   `cn.example:/loginbase/callback`；debug 构建（`FLAG_DEBUGGABLE`）首次发起时自动打印
 
 README 需要一个独立小节，含「三处一致」表与**症状 → 原因**映射表（含「invalid_redirect
 且字符串肉眼相同 → 数斜杠」）。
@@ -578,7 +578,7 @@ XML、生命周期钩子、参数解析、流程分辨、`exchangeOtc`）仍是�
 3. **错误消息带上「另一半」**：客户端报错时必须提醒服务端白名单要填同一个值，并说明
    「两边不一致时浏览器停在 `invalid_redirect`，App 侧收不到任何信号」
 4. **让「该填给服务端什么」随手可查**：`Loginbase.redirectUri(context)` 一行返回
-   `cn.trendingai:/loginbase/callback`；debug 构建（`FLAG_DEBUGGABLE`）首次发起时自动打印
+   `cn.example:/loginbase/callback`；debug 构建（`FLAG_DEBUGGABLE`）首次发起时自动打印
 
 README 需要一个独立小节，含「三处一致」表与**症状 → 原因**映射表。
 
@@ -780,7 +780,7 @@ App 可向它发伪造 intent。两家都拆成两个，不是巧合。
 ### 裁决
 
 **维持初裁：无 host 单斜杠形态。** 库的默认 redirect 为 `<scheme>:/loginbase/callback`，
-撤回正文的 `cn.trendingai://loginbase/callback`（双斜杠，`loginbase` 落在 host 位）。
+撤回正文的 `cn.example://loginbase/callback`（双斜杠，`loginbase` 落在 host 位）。
 库 manifest 的 filter 只声明 scheme（#1/#2 草图已如此）；debug/release 靠独立 scheme
 隔离（§5.3 已有，与 TrendingAI 注释互证）。
 
@@ -804,8 +804,8 @@ redirect、服务端白名单同步替换即可，无新旧共存问题。
 
 ### 场景
 
-接入方照文档给服务端配白名单，手一抖把库上报的 `cn.trendingai:/loginbase/callback`
-抄成双斜杠 `cn.trendingai://loginbase/callback`。服务端结构化校验里前者 host 为空、
+接入方照文档给服务端配白名单，手一抖把库上报的 `cn.example:/loginbase/callback`
+抄成双斜杠 `cn.example://loginbase/callback`。服务端结构化校验里前者 host 为空、
 后者 host 是 `loginbase`——精确匹配失败，用户点登录，**授权还没开始就 400
 `invalid_redirect`**，而开发者盯着两个肉眼几乎相同的字符串看不出差别。
 

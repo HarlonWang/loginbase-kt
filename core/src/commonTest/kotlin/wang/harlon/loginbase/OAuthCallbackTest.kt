@@ -103,7 +103,7 @@ class OAuthCallbackTest {
     fun `非 BMP 字符正确解码`() = authTest {
         val (client, _) = clientWith(InMemoryTokenStore()) { error("不该有网络请求") }
 
-        // TrendingAI 手写 decoder 的死角：surrogate 逐 Char 编码会把 emoji 解成乱码。
+        // 手写 decoder 的典型死角：surrogate 逐 Char 编码会把 emoji 解成乱码。
         // ktor 路径必须解出原文——这也是 #8 选 ktor 不手写的验收
         val outcome = client.handleOAuthCallback("$callback?error=%F0%9F%98%80")
 
