@@ -2,12 +2,12 @@ package wang.harlon.loginbase.browser
 
 import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.browser.auth.AuthTabIntent
 import androidx.browser.customtabs.CustomTabsClient
 import androidx.browser.customtabs.CustomTabsIntent
+import androidx.core.net.toUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import wang.harlon.loginbase.AuthClient
@@ -132,7 +132,7 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
 
     /** 三级回退链：Auth Tab → Custom Tab → 系统浏览器，按可用性回退 */
     private fun openBrowser(client: AuthClient, url: String, redirect: String) {
-        val uri = Uri.parse(url)
+        val uri = url.toUri()
         try {
             val cctPackage = CustomTabsClient.getPackageName(this, null)
             val tier = selectBrowserTier(
@@ -147,7 +147,7 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
                 BrowserTier.AUTH_TAB -> AuthTabIntent.Builder().build()
                     .apply { intent.setPackage(cctPackage) }
                     // 第三参是回跳 scheme，浏览器据此在 Tab 内截住回跳；缺 scheme 属防御不可达
-                    .launch(authTabLauncher, uri, requireNotNull(Uri.parse(redirect).scheme))
+                    .launch(authTabLauncher, uri, requireNotNull(redirect.toUri().scheme))
                 BrowserTier.CUSTOM_TAB -> CustomTabsIntent.Builder().build()
                     .apply { intent.setPackage(cctPackage) } // 锁定探测到的 provider，防被 App Links 截走
                     .launchUrl(this, uri)

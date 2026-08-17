@@ -5,9 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.util.Log
+import androidx.core.net.toUri
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -96,7 +96,7 @@ private fun AuthClient.startFlow(
  * 就地爆出，比「用户授权完卡在打不开的页面」早一整个浏览器往返。
  */
 private fun preflight(context: Context, redirect: String) {
-    val probe = Intent(Intent.ACTION_VIEW, Uri.parse(redirect))
+    val probe = Intent(Intent.ACTION_VIEW, redirect.toUri())
         .addCategory(Intent.CATEGORY_BROWSABLE)
     val resolved = context.packageManager.resolveActivity(probe, 0)
         ?: error(

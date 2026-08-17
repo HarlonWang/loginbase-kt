@@ -12,6 +12,7 @@ kotlinx-coroutines = "1.11.0"
 androidx-browser = "1.9.0"
 # Auth Tab 的 ActivityResultLauncher 需要 ComponentActivity（browser 模块直接引用其类型，显式声明不吃传递）
 androidx-activity = "1.9.3"
+androidx-core = "1.13.0"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
@@ -29,6 +30,7 @@ ktor-client-auth = { module = "io.ktor:ktor-client-auth", version.ref = "ktor" }
 # ↓ 仅 :browser 使用。coroutines-android 与 core 复用同一个版本条目，防 class-path 双版本
 androidx-browser = { module = "androidx.browser:browser", version.ref = "androidx-browser" }
 androidx-activity = { module = "androidx.activity:activity", version.ref = "androidx-activity" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidx-core" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "kotlinx-coroutines" }
 
 [plugins]
