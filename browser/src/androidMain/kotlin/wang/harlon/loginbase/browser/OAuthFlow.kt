@@ -22,7 +22,9 @@ import wang.harlon.loginbase.OAuthProvider
  * 判定、进程回收兜底全归库，消费方只需每变体一行 placeholder。
  *
  * @param redirect 不传则由 manifest 的 meta-data 推导（[Loginbase.redirectUri]），
- *   与 intent-filter 同源；自建 scheme / https app-link 才需要显式传
+ *   与 intent-filter 同源；改用别的 private-use scheme 才需要显式传。
+ *   **只支持 private-use scheme**：https app-link 形态要求 Auth Tab 的 host/path 重载、
+ *   intent-filter 带 autoVerify、以及 Digital Asset Links，本库三处都不提供
  */
 fun AuthClient.signIn(
     activity: Activity,
@@ -96,7 +98,13 @@ private fun AuthClient.startFlow(
  * 就地爆出，比「用户授权完卡在打不开的页面」早一整个浏览器往返。
  */
 private fun preflight(context: Context, redirect: String) {
-    val probe = Intent(Intent.ACTION_VIEW, redirect.toUri())
+    val uri = redirect.toUri()
+    // https 形态要 Auth Tab 的 host/path 重载 + Digital Asset Links + autoVerify，三处都不提供；
+    // 不先拦下会走到下面报「被其他应用抢注」，那是误导
+    require(uri.scheme?.startsWith("http", ignoreCase = true) != true) {
+        "[loginbase] redirect 只支持 private-use scheme（自有域名反写，如 cn.example），收到 $redirect"
+    }
+    val probe = Intent(Intent.ACTION_VIEW, uri)
         .addCategory(Intent.CATEGORY_BROWSABLE)
     val resolved = context.packageManager.resolveActivity(probe, 0)
         ?: error(

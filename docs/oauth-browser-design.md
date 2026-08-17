@@ -168,7 +168,7 @@ fun AuthClient.signIn(activity: Activity, provider: OAuthProvider)
 
 fun AuthClient.link(activity: Activity, provider: OAuthProvider)
 
-/** 需要自定义 redirect 的重载（自建 scheme、https app-link 等）。 */
+/** 需要自定义 redirect 的重载。只收 private-use scheme，不支持 https app-link。 */
 fun AuthClient.signIn(activity: Activity, provider: OAuthProvider, redirect: String)
 ```
 

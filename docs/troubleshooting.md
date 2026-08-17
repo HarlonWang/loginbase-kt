@@ -36,6 +36,9 @@
 4. `Failed.reason` 由服务端 App 定义（`already_linked` 是典型值），不是协议保证
 5. **只有 Android**。iOS 转正前仍是 `signInUrl()` + 自己开浏览器，见
    [`design.md`](design.md) 第 7 节
+6. **redirect 只收 private-use scheme**，不支持 https app-link：Auth Tab 的 https 形态要走
+   `launch(launcher, uri, host, path)` 重载并做 Digital Asset Links 验证，中转页还需要
+   带 `autoVerify` 的 host/path intent-filter——三处都不提供，传 https 会在发起前自检处报错
 
 设计全貌（双 Activity 拓扑、AppAuth #977 免疫、与 AppAuth / Auth0 的逐条对照）见
 [`oauth-browser-design.md`](oauth-browser-design.md)。
