@@ -12,7 +12,7 @@
 
 ### [x] 1. provider 硬编码在方法名里 — 已完成
 
-- **位置**：`library/src/commonMain/kotlin/wang/harlon/loginbase/AuthClient.kt:167` `:186`
+- **位置**：`core/src/commonMain/kotlin/wang/harlon/loginbase/AuthClient.kt:167` `:186`
 - **问题**：`githubSignInUrl` / `githubLinkUrl` 把 provider 焊死在方法名上，而协议路径本身是 `/oauth/{provider}/start`。加 Google/Apple 就是复制两个方法 + 两段文档。
 - **修法**：改成 `signInUrl(provider: OAuthProvider, redirect: String)` / `linkUrl(provider, redirect)`。`OAuthProvider` 用带 wire 值的枚举或 value class，留 `Custom(String)` 口子，避免服务端加 provider 时客户端非升级不可。
 - **落地**：新增 `OAuthProvider`（value class，非枚举——服务端 provider 集合由服务端 App 配置，枚举等于每次配置变化都 breaking）；两个方法改名并泛化，provider 走 `encodeURLPathPart()` 编码；库未发布，不留 deprecated 兼容壳。
@@ -43,7 +43,7 @@
 
 ### [x] 5. `fromWire()` 不该是公开 API — 已完成
 
-- **位置**：`library/src/commonMain/kotlin/wang/harlon/loginbase/Protocol.kt:55` `:87`
+- **位置**：`core/src/commonMain/kotlin/wang/harlon/loginbase/Protocol.kt:55` `:87`
 - **问题**：这两个是响应解码器，只有 `AuthClient` 内部解析 JSON 时用；消费方拿到的已经是枚举，永远不需要它。公开它等于把 wire 字符串写进公开契约，服务端改错误码字符串就成了客户端的 breaking change。
 - **修法**：降 `internal`。KMP 里 test source set 是 main 的 friend module（`usableTag()` 现在就是这么用的），`ProtocolTest` 那 4 个测试一行都不用改。
 - **落地**：两个 `companion object` 连同 `fromWire` 一起降 `internal`；`ProtocolTest` 果然一行未改，全绿。
@@ -57,7 +57,7 @@
 
 ### [x] 7. `platformLanguageTag()` 是顶层 public expect 函数，锁死太早 — 已完成
 
-- **位置**：`library/src/commonMain/kotlin/wang/harlon/loginbase/PlatformLocale.kt:11`
+- **位置**：`core/src/commonMain/kotlin/wang/harlon/loginbase/PlatformLocale.kt:11`
 - **问题**：公开它的用例是真实的（README 那条 `settings.tag ?: platformLanguageTag()` 回落链），但作为**顶层 expect 函数**一旦发版就固定了：将来想加参数、想换成 `LocaleProvider` 接口都是破坏性变更，而且它占了包的顶层命名空间。
 - **修法**：挪进 object，如 `Loginbase.systemLanguageTag()`。
 - **落地**：新增 `Loginbase` object，对外只有 `Loginbase.appLanguageTag()`；`platformLanguageTag()` 保留顶层形态但降 `internal`，由 object 转发一层。**expect/actual 不能直接做 object 成员**（那要写成 `expect object`，得在每个平台重复 object 本身），所以是转发而不是搬家。
@@ -66,7 +66,7 @@
 
 ### [x] 8. `AuthState` 只有 3 态，缺「刷新失败但会话还在」
 
-- **位置**：`library/src/commonMain/kotlin/wang/harlon/loginbase/AuthModels.kt:9-20`
+- **位置**：`core/src/commonMain/kotlin/wang/harlon/loginbase/AuthModels.kt:9-20`
 - **问题**：`RefreshOutcome.Failed` 时 `authState` 仍是 `SignedIn`，UI 无从知道「令牌可能已过期、下个请求会 401」。另外 `SignedOut` 不区分「用户主动登出」和「会话被撤销」，走 `authState` 这条链路时信息永久丢失，UI 弹不出「登录已失效」。
 - **参照**：supabase-kt 为此专门把早期的 `SessionStatus.NetworkError` 重设计成 `RefreshFailure`，并用 `NotAuthenticated(isSignOut: Boolean)` 区分来源。
 - **修法**：补 `RefreshFailure` 态；`SignedOut` 加 `isUserInitiated` 或拆两态。
@@ -174,7 +174,7 @@
 
 ### [x] 19. `InMemoryTokenStore` 公开、非线程安全、却写着「生产可用」 — 已完成
 
-- **位置**：`library/src/commonMain/kotlin/wang/harlon/loginbase/TokenStore.kt:38-53`
+- **位置**：`core/src/commonMain/kotlin/wang/harlon/loginbase/TokenStore.kt:38-53`
 - **问题**：`private var tokens` 无任何同步，类注释却写「用于测试，**以及「本次启动内有效即可」的场景**」——后半句是在说生产可用。而 `AuthClient` 文档反复强调「多协程并发调 refresh」，两件事凑一起就是数据竞争。
 - **修法**：加 Mutex，或删掉「生产可用」措辞、明确它只是测试替身。
 
@@ -246,7 +246,7 @@
 
 ### [x] 29. 有个测试真实耗时 45 秒 — 已完成（随第 14 条）
 
-- **位置**：`library/src/commonTest/kotlin/wang/harlon/loginbase/AuthClientTest.kt:116`
+- **位置**：`core/src/commonTest/kotlin/wang/harlon/loginbase/AuthClientTest.kt:116`
 - **问题**：其余 33 个测试合计约 0.2s。`MockEngine` 与 `HttpTimeout` 的 killer 协程都跑在 `ioDispatcher()`，不是 `runTest` 的虚拟时间调度器，所以是墙钟时间；已占掉 `runTest` 默认 60s 超时的 75%，机器抖动时会假失败。
 - **修法**：把熔断值做成 `internal` 可注入参数，测试传小值。
 

@@ -25,4 +25,4 @@ jobs:
       # ubuntu runner 编不了 iOS target，故只跑 android host test；
       # iOS 侧的编译由 publish（macos runner）与本地开发覆盖
       - name: Build and test
-        run: ./gradlew :library:testAndroidHostTest :library-browser:testAndroidHostTest
+        run: ./gradlew :core:testAndroidHostTest :browser:testAndroidHostTest

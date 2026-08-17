@@ -3,8 +3,8 @@
 ## 构建与测试
 
 ```bash
-./gradlew :library:testAndroidHostTest :library-browser:testAndroidHostTest   # CI 跑的（ubuntu 编不了 iOS）
-./gradlew :library:compileKotlinIosSimulatorArm64                             # iOS 侧编译需 macOS
+./gradlew :core:testAndroidHostTest :browser:testAndroidHostTest   # CI 跑的（ubuntu 编不了 iOS）
+./gradlew :core:compileKotlinIosSimulatorArm64                             # iOS 侧编译需 macOS
 ```
 
 **改动 `commonMain` 的形状后请本地跑一次 iOS 编译**（改 `expect` 签名、改 `TokenStore`

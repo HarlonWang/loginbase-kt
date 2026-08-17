@@ -26,7 +26,7 @@ ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
 # 不进产物，故不违反「依赖最小集」——库自己绝不引它（BearerTokens 在这个包里，
 # 引了就等于把 ktor 的插件 API 写进本库的公开契约）。
 ktor-client-auth = { module = "io.ktor:ktor-client-auth", version.ref = "ktor" }
-# ↓ 仅 :library-browser 使用。coroutines-android 与 core 复用同一个版本条目，防 class-path 双版本
+# ↓ 仅 :browser 使用。coroutines-android 与 core 复用同一个版本条目，防 class-path 双版本
 androidx-browser = { module = "androidx.browser:browser", version.ref = "androidx-browser" }
 androidx-activity = { module = "androidx.activity:activity", version.ref = "androidx-activity" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "kotlinx-coroutines" }

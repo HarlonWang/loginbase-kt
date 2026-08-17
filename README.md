@@ -51,7 +51,7 @@ val api = HttpClient(okHttpEngine) {
 }
 ```
 
-`refreshTokens` 里**必须调 `auth.refresh()`，不要自己去 POST `/refresh`**：ktor 插件的单飞是 per-client 的，绕过去会并发刷新、烧掉服务端 1h/3 次的救活配额，而且全程功能正常、没有任何报错，等撞穿配额把用户强制登出时已经很难查。理由见 [design.md 第 1 节](docs/design.md)；这段接线有[可执行版本](library/src/commonTest/kotlin/wang/harlon/loginbase/ReadmeIntegrationTest.kt)（含证明绕过会刷两次的反例），改这段文档请一起改测试。
+`refreshTokens` 里**必须调 `auth.refresh()`，不要自己去 POST `/refresh`**：ktor 插件的单飞是 per-client 的，绕过去会并发刷新、烧掉服务端 1h/3 次的救活配额，而且全程功能正常、没有任何报错，等撞穿配额把用户强制登出时已经很难查。理由见 [design.md 第 1 节](docs/design.md)；这段接线有[可执行版本](core/src/commonTest/kotlin/wang/harlon/loginbase/ReadmeIntegrationTest.kt)（含证明绕过会刷两次的反例），改这段文档请一起改测试。
 
 > **不装插件也行**——红线是「刷新走 `auth.refresh()`」，不是「必须用插件」。自己捕 401 再调 `auth.refresh()` 同样安全，但插件免费覆盖的三处，手写壳要自己想到：把 401 转成返回值（`false` / `null` / 自定义错误对象）而不抛异常的接口，捕不到；靠 `cause` 链匹配异常类型时，中间每层都要保留原始异常，包一层换了类型就断；匿名可用的端点没 token 也要照发，套不了「无会话就短路」的包装器。
 
@@ -162,7 +162,7 @@ catch (e: LoginbaseException.MalformedResponse) { } // 两端对不上，重试�
 
 ### `OAuthProvider`
 
-[value class 不是枚举](library/src/commonMain/kotlin/wang/harlon/loginbase/OAuthProvider.kt)：服务端启用了哪几个由服务端 App 配置，本库不知道也不校验，所以没列进常量的直接写 `OAuthProvider("google")` 即可，不必等客户端发版。
+[value class 不是枚举](core/src/commonMain/kotlin/wang/harlon/loginbase/OAuthProvider.kt)：服务端启用了哪几个由服务端 App 配置，本库不知道也不校验，所以没列进常量的直接写 `OAuthProvider("google")` 即可，不必等客户端发版。
 
 ### 邮件语言（protocol 1.3.0）
 

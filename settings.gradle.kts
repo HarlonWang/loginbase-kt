@@ -15,5 +15,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "loginbase-kt"
 
-include(":library")
-include(":library-browser")
+include(":core")
+include(":browser")

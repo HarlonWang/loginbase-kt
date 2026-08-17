@@ -7,7 +7,7 @@ plugins {
 }
 
 // Android-only 的可选模块（design：oauth-browser 方案 §5.2 / §11 差异 #10）。
-// 用与 :library 相同的 KMP + android-library 插件组合（而非 com.android.library）：
+// 用与 :core 相同的 KMP + android-library 插件组合（而非 com.android.library）：
 // 构建基建只维护一套，host test（JVM 跑 android 源集）也复用同一形态。
 kotlin {
     android {
@@ -29,8 +29,8 @@ kotlin {
     sourceSets {
         androidMain.dependencies {
             // api：消费方引本模块就能看到 AuthClient / OAuthOutcome 等核心类型，
-            // 不必再手写一行 :library 依赖
-            api(project(":library"))
+            // 不必再手写一行 :core 依赖
+            api(project(":core"))
             implementation(libs.androidx.browser)
             // 管理页 = ComponentActivity：Auth Tab 的结果经 ActivityResultLauncher 回来
             implementation(libs.androidx.activity)
