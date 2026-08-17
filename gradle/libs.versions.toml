@@ -1,5 +1,4 @@
 [versions]
-# 与消费方 TrendingAI 的 catalog 对齐（composite build 是源码级参与构建，版本不一致会有摩擦）
 agp = "9.2.1"
 kotlin = "2.4.10"
 android-minSdk = "24"
