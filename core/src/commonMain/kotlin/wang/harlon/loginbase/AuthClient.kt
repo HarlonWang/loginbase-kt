@@ -3,7 +3,6 @@ package wang.harlon.loginbase
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.HttpClientEngine
-import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.delete
 import io.ktor.client.request.header
@@ -18,6 +17,7 @@ import io.ktor.http.isSuccess
 import io.ktor.http.encodeURLParameter
 import io.ktor.http.encodeURLPathPart
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -177,6 +177,7 @@ class AuthClient(
     val oauthResults: SharedFlow<OAuthOutcome> = _oauthResults.asSharedFlow()
 
     /** 声明 [oauthResults] 的当前结果已处理完，清掉 replay 缓存。 */
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun consumeOauthResult() {
         _oauthResults.resetReplayCache()
     }
@@ -413,7 +414,7 @@ class AuthClient(
                     http.delete(url) { header(HttpHeaders.Authorization, "Bearer $token") }
                 } catch (e: CancellationException) {
                     throw e
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     // 尽力而为：服务端那条会话最坏自然失效，不该把用户卡在登录态
                 }
             }
@@ -520,12 +521,12 @@ class AuthClient(
             bodyAsText()
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             return null
         }
         return try {
             json.parseToJsonElement(text) as? JsonObject
-        } catch (e: SerializationException) {
+        } catch (_: SerializationException) {
             null
         }
     }
