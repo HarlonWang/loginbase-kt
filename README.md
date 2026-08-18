@@ -195,4 +195,4 @@ engine 的生命周期仍归你，`AuthClient.close()` 不会关它。为什么�
 
 ## License
 
-Apache 2.0
+MIT。已发版本（0.1.0 / 0.1.1）的 POM 元数据有误，以 LICENSE 为准。
