@@ -27,8 +27,6 @@ import kotlin.test.assertTrue
 
 class AuthClientTest {
 
-    // ---- 单飞 refresh：护栏预算的客户端前提 ----
-
     @Test
     fun `并发 refresh 只打一次服务端`() = authTest {
         val store = InMemoryTokenStore(TokenPair("a0", "r0"))
@@ -165,8 +163,6 @@ class AuthClientTest {
         assertNull(e.retryAfterSeconds, "取不到就是取不到，不该因此炸掉整个错误")
     }
 
-    // ---- 保险丝与取消语义 ----
-
     @Test
     fun `只提供 engine 时，库自己的超时必然生效`() = authTest {
         // 只收 engine、client 由库自建，带来的确定性就在这里：超时行为不取决于消费方
@@ -225,8 +221,6 @@ class AuthClientTest {
             client.authState.value,
         )
     }
-
-    // ---- 登出与在途刷新的竞态 ----
 
     /**
      * 让刷新请求停在「已发出、未返回」的状态，把并发窗口变成确定性的。
@@ -326,8 +320,6 @@ class AuthClientTest {
         assertEquals("r1", store.load()?.refreshToken)
         assertEquals(AuthState.SignedIn, client.authState.value)
     }
-
-    // ---- 会话失效判定：只有服务端明说才清 ----
 
     @Test
     fun `401 invalid_refresh_token 才清会话`() = authTest {
@@ -477,8 +469,6 @@ class AuthClientTest {
         assertIs<RefreshOutcome.NoSession>(client.refresh())
     }
 
-    // ---- 邮箱验证码 ----
-
     @Test
     fun `verifyCode 成功即落盘并置登录态，透传 isNewUser 与 user`() = authTest {
         val store = InMemoryTokenStore()
@@ -538,8 +528,6 @@ class AuthClientTest {
         assertEquals(AuthError.UNKNOWN, e.error)
         assertEquals("some_future_error", e.rawError)
     }
-
-    // ---- OAuth ----
 
     @Test
     fun `signInUrl 对 deepLink 做 URL 编码`() {
@@ -614,8 +602,6 @@ class AuthClientTest {
         assertEquals("http_502", e.rawError, "至少要能看出是哪个状态码")
     }
 
-    // ---- 异常契约：一个根，且不泄漏 ktor ----
-
     @Test
     fun `传输层异常包成 Network，不把 ktor 类型泄漏给调用方`() = authTest {
         // engine 由消费方提供、ktor 只是实现细节，不该逼调用方去 catch ktor 的异常层次
@@ -687,8 +673,6 @@ class AuthClientTest {
         assertIs<RefreshOutcome.NoSession>(client.refresh())
         assertIs<AuthState.SignedOut>(client.authState.value)
     }
-
-    // ---- 登出与恢复 ----
 
     @Test
     fun `signOut 即使服务端失败也清本地`() = authTest {

@@ -38,7 +38,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 /**
  * loginbase 客户端，实现 [PROTOCOL_VERSION] 声明的协议版本。
- * **请当单例持有（每进程一个）**：单飞锁是实例字段（docs/design.md 第 1 节）。
+ * **请当单例持有（每进程一个）**：单飞锁是实例字段（docs/design.md）。
  * 库不解析 JWT——原样存、原样用，客户端没有本地时间依赖。
  *
  * @param baseUrl 服务端挂载点，如 `https://api.example.com/auth`
@@ -90,8 +90,8 @@ class AuthClient(
     private val refreshMutex = Mutex()
 
     /**
-     * 存储写入互斥（毫秒级；[refreshMutex] 跨 HTTP 往返是秒级）。[signOut] 只取这把——
-     * 登出不该被在途刷新卡住。嵌套固定 refreshMutex 外、storeMutex 内。
+     * 存储写入互斥（毫秒级；[refreshMutex] 跨 HTTP 往返是秒级）。
+     * 嵌套固定 refreshMutex 外、storeMutex 内。
      */
     private val storeMutex = Mutex()
 
@@ -121,12 +121,9 @@ class AuthClient(
         return _authState.value
     }
 
-    // ---- 邮箱验证码 ----
-
     /**
      * `POST /code/send`。无论账号是否存在都成功（防枚举）。
-     * 邮件语言由 [localeProvider] 决定随请求上报，服务端对未知语言静默回落；
-     * 取不到时字段整个省略、不发 `und`——省略与「传了不支持的值」在服务端观测上是两回事。
+     * 邮件语言由 [localeProvider] 决定随请求上报；取不到时字段整个省略、不发 `und`（见 [usableTag]）。
      */
     suspend fun sendCode(email: String): SendCodeResult {
         val payload = buildMap {
@@ -150,12 +147,10 @@ class AuthClient(
             .toSession()
             .also { persist(it.tokens) }
 
-    // ---- 社交登录（OAuth） ----
-
     /**
      * 拼登录授权入口，交给**外部浏览器**打开（不要用内嵌 WebView）。Android 直接用
      * browser 模块的 `signIn()`，一般不必手动走这条。
-     * 回跳带 `otc`（60 秒单次有效），由 [handleOAuthCallback] 或 [exchangeOtc] 兑换。
+     * 回跳带 `otc`，由 [handleOAuthCallback] 或 [exchangeOtc] 兑换。
      */
     fun signInUrl(provider: OAuthProvider, redirect: String): String =
         "$base/oauth/${provider.id.encodeURLPathPart()}/start" +
@@ -167,8 +162,6 @@ class AuthClient(
             .toSession()
             .also { persist(it.tokens) }
 
-    // ---- 社交登录（OAuth 回跳） ----
-
     private val _oauthResults = MutableSharedFlow<OAuthOutcome>(
         replay = 1, // 兜「投递早于订阅」：进程回收后 restore() 里的处理先于 UI 订阅
         extraBufferCapacity = 1,
@@ -176,7 +169,7 @@ class AuthClient(
 
     /**
      * 消费方唯一的 OAuth 结果通道（发起 UI 可能随进程消失，结果不走返回值）。
-     * `replay = 1` 只兜「投递早于订阅」，**不是历史记录**——处理完调 [consumeOauthResult] 清掉。
+     * **不是历史记录**——处理完调 [consumeOauthResult] 清掉。
      */
     val oauthResults: SharedFlow<OAuthOutcome> = _oauthResults.asSharedFlow()
 
@@ -257,8 +250,6 @@ class AuthClient(
             ?: throw LoginbaseException.MalformedResponse("authorizeUrl")
     }
 
-    // ---- 会话 ----
-
     /**
      * 取当前 access token；无会话或刷新失败返回 null。
      * 顺手把还停在 Unknown 的 [authState] 补齐——避免「状态说 Unknown、这里却有令牌」的矛盾。
@@ -286,8 +277,7 @@ class AuthClient(
     /**
      * `POST /refresh`，**单飞**：同一时刻至多一条真实刷新在飞，排队者复用同轮结果
      * （进锁前记 [lastRound] 编号，进锁后编号变了即有人替我干完了）。
-     * **失败也共享**——失败时存储纹丝不动，等待者若各自重发正是烧穿服务端救活配额
-     * （1h/3 次）的路径。完整论证与事故史见 docs/design.md 第 1 节。
+     * **失败也共享**——等待者各自重发会撞穿服务端救活护栏（docs/design.md）。
      */
     suspend fun refresh(): RefreshOutcome {
         val existing = tokenStore.load()
@@ -323,10 +313,7 @@ class AuthClient(
         }
     }
 
-    /**
-     * 一次真实的刷新尝试：发请求、判定、必要时落盘。**假定已持有 [refreshMutex]**。
-     * 单独抽出让「一次尝试做什么」与并发编排分离；所有失败分支都从这里 `return`。
-     */
+    /** 一次真实的刷新尝试：发请求、判定、必要时落盘。**假定已持有 [refreshMutex]**。 */
     private suspend fun runRound(current: TokenPair): RefreshOutcome {
         val response = try {
             // 请求必有限时（client 自建、[installTimeout] 必然生效），锁不会被永久持有
@@ -349,8 +336,8 @@ class AuthClient(
             val reason = RefreshFailure.fromWire(
                 body?.stringOrNull("reason").orEmpty()
             )
-            // 唯一允许清会话的分支：服务端明确说 token 不存在。UnlessAlready：并发
-            // signOut 可能先到，改写成 SessionEnded 会让自己登出的用户误看到「登录已失效」
+            // 唯一允许清会话的分支：服务端明确说 token 不存在。
+            // UnlessAlready：并发 signOut 可能已先写下更准确的归因
             storeMutex.withLock {
                 tokenStore.clear()
                 signedOutUnlessAlready(SignOutReason.SessionEnded(reason))
@@ -443,8 +430,6 @@ class AuthClient(
     fun close() {
         if (httpDelegate.isInitialized()) http.close()
     }
-
-    // ---- 内部 ----
 
     private suspend fun persist(tokens: TokenPair) {
         tokenStore.save(tokens)

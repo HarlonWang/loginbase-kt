@@ -11,7 +11,7 @@ class LoginbaseConfig internal constructor() {
     /**
      * 注入自己的 [HttpClientEngine]，缺省由 ktor 从 classpath 发现；engine 归你所有。
      * 只收 engine 不收整个 `HttpClient`——注入 client 会让 refresh 跑在未知插件上
-     * （docs/design.md 第 3 节）。
+     * （docs/design.md）。
      */
     var httpEngine: HttpClientEngine? = null
 

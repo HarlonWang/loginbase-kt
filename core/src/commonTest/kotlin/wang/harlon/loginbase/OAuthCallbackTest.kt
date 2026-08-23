@@ -28,8 +28,6 @@ class OAuthCallbackTest {
     private fun tokensJson(suffix: String) =
         """{"accessToken":"a$suffix","refreshToken":"r$suffix"}"""
 
-    // ---- 三种协议形态 ----
-
     @Test
     fun `otc 回跳走兑换并落盘`() = authTest {
         val store = InMemoryTokenStore()
@@ -76,8 +74,6 @@ class OAuthCallbackTest {
         assertEquals(OAuthOutcome.Failed("already_linked"), outcome)
         assertEquals(0, calls)
     }
-
-    // ---- 形状识别与解码 ----
 
     @Test
     fun `认不出的形状返回 Unrecognized`() = authTest {
@@ -132,8 +128,6 @@ class OAuthCallbackTest {
         assertIs<OAuthOutcome.SignedIn>(outcome)
         assertEquals(1, calls)
     }
-
-    // ---- 幂等（§6.1 otc 层：防重复打服务端） ----
 
     @Test
     fun `同一 otc 重复送入只打一次服务端并复用结果`() = authTest {
@@ -219,8 +213,6 @@ class OAuthCallbackTest {
         assertEquals(2, calls)
     }
 
-    // ---- 结果通道（§6.1 通道层：replay 兜底与 consume） ----
-
     @Test
     fun `结果先于订阅产生也能收到`() = authTest {
         val (client, _) = clientWith(InMemoryTokenStore()) {
@@ -246,8 +238,6 @@ class OAuthCallbackTest {
         // 不清 replay 的话，绑定页会收到陈旧的 SignedIn、弹一条莫名的「登录成功」
         assertTrue(client.oauthResults.replayCache.isEmpty(), "replay 不是历史记录")
     }
-
-    // ---- 停泊排空（§6.3 进程被回收） ----
 
     @Test
     fun `restore 排空停泊的回跳`() = authTest {

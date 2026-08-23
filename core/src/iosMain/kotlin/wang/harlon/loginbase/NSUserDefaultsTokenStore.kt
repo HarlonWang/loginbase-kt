@@ -5,15 +5,11 @@ import platform.Foundation.NSUserDefaults
 /**
  * iOS 令牌存储：NSUserDefaults。
  *
- * `synchronize()` 强制立即落盘——理由同 Android 侧的 `commit()`：轮换到的新令牌
- * 必须在 [save] 返回前落盘，否则进程被杀会触发服务端的丢回执救活（有护栏）。
- * 该方法在现代 iOS 上已非必需（系统会适时写入），但显式调用把「同步落盘」这个
- * 与服务端配套的语义摆在明面上，代价可忽略。
+ * `synchronize()`：满足 [TokenStore] 的同步落盘硬要求（理由同 Android 侧的 `commit()`）。
+ * 现代 iOS 上它已非必需（系统会适时写入），但显式调用把该语义摆在明面上，别删。
+ * 未做 Keychain；确有需要的 App 自己实现 [TokenStore]。
  *
- * 未做 Keychain：与 Android 侧一致，保持 Logto 时代的存储强度；Keychain 需要
- * cinterop 与更多平台代码，确有需要的 App 自己实现 [TokenStore]。
- *
- * 注：本实现是为 target 完整性与将来准备，尚未在真机链路上验证过（CI 也不编 iOS）。
+ * 注：尚未在真机链路上验证过（CI 也不编 iOS）。
  */
 class NSUserDefaultsTokenStore(
     private val defaults: NSUserDefaults = NSUserDefaults.standardUserDefaults,

@@ -19,9 +19,8 @@ internal sealed interface FlowAction {
 }
 
 /**
- * 管理页的状态机（纯类，可 JVM 单测）。**data-first 的分支顺序是硬约束**：
- * 系统重建的实例状态全空、只有转发 intent 里的 data，顺序颠倒会把唯一的结果
- * 当「意外启动」吞掉。论证见 docs/oauth-browser-design.md。
+ * 管理页的状态机（纯类，可 JVM 单测）。**data-first 的分支顺序是硬约束**
+ * （论证见 docs/oauth-browser-design.md）。
  */
 internal class OAuthFlowController(intentLaunched: Boolean) {
 
@@ -37,7 +36,8 @@ internal class OAuthFlowController(intentLaunched: Boolean) {
     }
 
     fun onResume(hasLaunchRequest: Boolean): FlowAction {
-        // data-first：重建实例状态全空、只有 data，此检查必须最先（见类文档）
+        // data-first：重建的实例状态全空、只有 data，此检查必须最先，
+        // 否则唯一的结果会被当「意外启动」吞掉
         latestData?.let { return FlowAction.Deliver(it) }
         if (!intentLaunched && hasLaunchRequest) {
             intentLaunched = true
