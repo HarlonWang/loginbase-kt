@@ -23,13 +23,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * README「接入指南」第 2 步那段 `Auth` 插件接线的**可执行版本**。
+ * README「快速开始」第 3 步那段 `Auth` 插件接线的**可执行版本**。
  *
  * 那段代码是整份指南里唯一「写错了不会有任何报错」的地方——绕过 `auth.refresh()` 自己
  * 去 POST `/refresh` 照样能跑通、功能完全正常，只是每次 token 过期偷偷烧一格服务端的
  * 救活配额。既然文档里专门警告了这件事，文档给出的正确版本就不能只是「看起来对」。
  *
- * 本文件里的接线**与 README 保持逐字一致**，改 README 时请一起改。它证明三件事：
+ * 本文件里的接线**与 README 保持逐字一致**（注释对应中文版；英文版同代码），改 README 时中英两份连同本文件一起改。它证明三件事：
  *
  * 1. 那段代码**能编译**（`BearerTokens` 的可空 refreshToken、两个 lambda 的 suspend
  *    与 receiver 签名）
@@ -78,7 +78,7 @@ class ReadmeIntegrationTest {
             }
     }
 
-    // ↓↓↓ 与 README「接入指南」第 2 步逐字一致 ↓↓↓
+    // ↓↓↓ 与 README「快速开始」第 3 步逐字一致 ↓↓↓
     private fun businessClient(server: FakeServer, auth: AuthClient) = HttpClient(MockEngine(server.handler)) {
         install(Auth) {
             bearer {
@@ -95,7 +95,7 @@ class ReadmeIntegrationTest {
             }
         }
     }
-    // ↑↑↑ 与 README「接入指南」第 2 步逐字一致 ↑↑↑
+    // ↑↑↑ 与 README「快速开始」第 3 步逐字一致 ↑↑↑
 
     @Test
     fun `两个业务 client 同时 401，服务端只被刷新一次`() = authTest {
