@@ -28,7 +28,7 @@ internal fun appendClientProbe(
         append(key).append('=').append(java.net.URLEncoder.encode(value, "UTF-8"))
     }
     param("browser_tier", tier.name.lowercase())
-    cctPackage?.let { param("browser_pkg", it) }
+    cctPackage?.takeIf { it.isNotBlank() }?.let { param("browser_pkg", it) }
     clientFlowId?.takeIf { it.isNotBlank() }?.let { param("client_flow_id", it) }
 }
 

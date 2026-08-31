@@ -24,6 +24,14 @@ class AppendClientProbeTest {
     }
 
     @Test
+    fun `空白 cctPackage 视同未传`() {
+        assertEquals(
+            "$base&browser_tier=custom_tab",
+            appendClientProbe(base, BrowserTier.CUSTOM_TAB, " ", null),
+        )
+    }
+
+    @Test
     fun `空白 clientFlowId 视同未传`() {
         assertEquals(
             "$base&browser_tier=auth_tab&browser_pkg=com.android.chrome",
