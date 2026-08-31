@@ -25,13 +25,16 @@ import wang.harlon.loginbase.OAuthProvider
  *   与 intent-filter 同源；改用别的 private-use scheme 才需要显式传。
  *   **只支持 private-use scheme**：https app-link 形态要求 Auth Tab 的 host/path 重载、
  *   intent-filter 带 autoVerify、以及 Digital Asset Links，本库三处都不提供
+ * @param clientFlowId 消费方埋点体系的流程标识，随 start 请求进服务端统计（跨库对齐用），
+ *   不进任何响应体。**应每次流程一个值，勿传用户级稳定标识**——它会出现在 URL 与统计表里
  */
 fun AuthClient.signIn(
     activity: Activity,
     provider: OAuthProvider,
     redirect: String = Loginbase.redirectUri(activity),
+    clientFlowId: String? = null,
 ) {
-    startFlow(activity, LoginbaseAuthActivity.MODE_SIGN_IN, provider, redirect)
+    startFlow(activity, LoginbaseAuthActivity.MODE_SIGN_IN, provider, redirect, clientFlowId)
 }
 
 /**
@@ -81,6 +84,7 @@ private fun AuthClient.startFlow(
     mode: String,
     provider: OAuthProvider,
     redirect: String,
+    clientFlowId: String? = null,
 ) {
     preflight(activity, redirect)
     // 静态槽：发起方就是自己，不需要消费方注册；进程死亡后槽消失，届时走停泊通路
@@ -89,7 +93,8 @@ private fun AuthClient.startFlow(
         Intent(activity, LoginbaseAuthActivity::class.java)
             .putExtra(LoginbaseAuthActivity.EXTRA_MODE, mode)
             .putExtra(LoginbaseAuthActivity.EXTRA_PROVIDER, provider.id)
-            .putExtra(LoginbaseAuthActivity.EXTRA_REDIRECT, redirect),
+            .putExtra(LoginbaseAuthActivity.EXTRA_REDIRECT, redirect)
+            .putExtra(LoginbaseAuthActivity.EXTRA_CLIENT_FLOW_ID, clientFlowId),
     )
 }
 
