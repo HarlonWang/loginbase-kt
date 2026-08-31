@@ -107,7 +107,16 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
         val redirect = intent.getStringExtra(EXTRA_REDIRECT) ?: run { finish(); return }
 
         when (intent.getStringExtra(EXTRA_MODE)) {
-            MODE_SIGN_IN -> openBrowser(client, client.signInUrl(provider, redirect), redirect)
+            MODE_SIGN_IN -> {
+                val choice = chooseBrowser()
+                val url = appendClientProbe(
+                    client.signInUrl(provider, redirect),
+                    choice.tier,
+                    choice.cctPackage,
+                    intent.getStringExtra(EXTRA_CLIENT_FLOW_ID),
+                )
+                openBrowser(client, url, redirect, choice)
+            }
             MODE_LINK -> OAuthFlowRuntime.scope.launch {
                 // link 的授权 URL 要先带 Bearer POST 换取，这次往返里用户停在透明页上
                 val url = try {
@@ -123,23 +132,33 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
                     // 等待期间用户按返回退出了：流程已被放弃
                     client.publishOAuthOutcome(OAuthOutcome.Cancelled)
                 } else {
-                    openBrowser(client, url, redirect)
+                    openBrowser(client, url, redirect, chooseBrowser())
                 }
             }
             else -> finish()
         }
     }
 
-    /** 三级回退链：Auth Tab → Custom Tab → 系统浏览器，按可用性回退 */
-    private fun openBrowser(client: AuthClient, url: String, redirect: String) {
-        val uri = url.toUri()
-        try {
-            val cctPackage = CustomTabsClient.getPackageName(this, null)
-            val tier = selectBrowserTier(
+    private data class BrowserChoice(val tier: BrowserTier, val cctPackage: String?)
+
+    /** 通路选择与打开分离：登录轨要在打开前把选定的通路拼进 URL（appendClientProbe） */
+    private fun chooseBrowser(): BrowserChoice {
+        val cctPackage = CustomTabsClient.getPackageName(this, null)
+        return BrowserChoice(
+            tier = selectBrowserTier(
                 authTabSupported = cctPackage != null &&
                     CustomTabsClient.isAuthTabSupported(this, cctPackage),
                 cctPackage = cctPackage,
-            )
+            ),
+            cctPackage = cctPackage,
+        )
+    }
+
+    /** 三级回退链：Auth Tab → Custom Tab → 系统浏览器，按可用性回退 */
+    private fun openBrowser(client: AuthClient, url: String, redirect: String, choice: BrowserChoice) {
+        val uri = url.toUri()
+        try {
+            val (tier, cctPackage) = choice
             if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
                 android.util.Log.i("loginbase", "browser tier = $tier (provider = $cctPackage)")
             }
@@ -177,6 +196,7 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
         const val EXTRA_MODE = "wang.harlon.loginbase.MODE"
         const val EXTRA_PROVIDER = "wang.harlon.loginbase.PROVIDER"
         const val EXTRA_REDIRECT = "wang.harlon.loginbase.REDIRECT"
+        const val EXTRA_CLIENT_FLOW_ID = "wang.harlon.loginbase.CLIENT_FLOW_ID"
         const val MODE_SIGN_IN = "sign_in"
         const val MODE_LINK = "link"
         private const val KEY_INTENT_LAUNCHED = "wang.harlon.loginbase.INTENT_LAUNCHED"
