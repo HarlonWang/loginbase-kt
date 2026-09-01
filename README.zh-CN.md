@@ -12,14 +12,14 @@
 | 平台 | 状态 |
 |---|---|
 | Android | 已在生产环境 |
-| iOS | 占位 target，不承诺可用——它的作用是约束 `commonMain` 不写死 JVM API。[转正条件](docs/design.md) |
+| iOS | Kotlin 宿主下可用——邮箱验证码与社交登录都已在 Compose Multiplatform App 上跑通。[剩余缺口](docs/design.md) |
 
 ## 能力
 
 - **token 不再是你的事。** 存储、轮换、过期、重试全都收在一个 `AuthClient` 后面，你的 API 调用重新长得像 API 调用。
 - **并发刷新只发一次。** 二十个请求同一瞬间撞上 401，只有一次刷新真正发出去。按 HTTP client 各自做单飞——也就是最顺手的那种写法——会悄悄烧掉服务端的会话救活配额，没有报错、没有症状，直到某天用户被强制登出。
 - **「登出」和「离线」是两件事。** 弱网下刷新失败不是登出，但手写的客户端照样会把用户踢去登录页。四个明确的状态，在一处穷尽处理。
-- **社交登录，从头到尾。** 授权页在合规的外部 user-agent 打开（Auth Tab → Custom Tab → 系统浏览器按可用性回退），回跳捕获、登录与绑定的分辨、码兑换、取消判定、进程被回收后的续跑，全都不用写。可选的 Android 模块，不用它的项目零感知。
+- **社交登录，从头到尾。** 授权页在各平台合规的 user-agent 里打开（Android 是 Auth Tab → Custom Tab → 系统浏览器按可用性回退，iOS 是 `ASWebAuthenticationSession`），回跳捕获、登录与绑定的分辨、码兑换、取消判定、进程被回收后的续跑，全都不用写。可选模块，不用它的项目零感知。
 - **三个依赖，不含 UI，不绑 engine。** `ktor-client-core`、`kotlinx-serialization-json`、`kotlinx-coroutines-core`。HTTP engine 由你带，本库绝不替你选。
 
 ## 快速开始
@@ -109,7 +109,7 @@ auth.signOut()                                        // 或 signOutAll() 登出
 
 ## 社交登录
 
-只用邮箱验证码的话，核心 artifact 就够了。加上这个可选的 Android 模块，整个浏览器往返都不用管：
+只用邮箱验证码的话，核心 artifact 就够了。加上这个可选模块，整个授权往返都不用管：
 
 ```kotlin
 dependencies { implementation("wang.harlon:loginbase-kt-browser:<version>") }
@@ -120,7 +120,15 @@ android.defaultConfig {
 }
 ```
 
-中转页的 intent-filter 与运行时推导的 redirect 都读这一个占位符，不会漂移。`Loginbase.redirectUri(context)` 一行打印出该填给服务端白名单什么。[完整接线](docs/integration.md#social-sign-in) · [设计方案](docs/oauth-browser-design.md)
+中转页的 intent-filter 与运行时推导的 redirect 都读这一个占位符，不会漂移。`Loginbase.redirectUri(context)` 一行打印出该填给服务端白名单什么。
+
+iOS 没有 manifest 可推导，redirect 直接传，scheme 段就是 `callbackURLScheme`：
+
+```kotlin
+auth.signIn(OAuthProvider.GitHub, redirect = "cn.example:/loginbase/callback")
+```
+
+[完整接线](docs/integration.md#social-sign-in) · [设计方案](docs/oauth-browser-design.md)
 
 ## 文档
 
@@ -128,7 +136,7 @@ android.defaultConfig {
 |---|---|
 | [接入指南](docs/integration.md) | 令牌存储、异常处置、定制 engine、社交登录完整接线 |
 | [排错](docs/troubleshooting.md) | 症状 → 原因，以及社交登录的已知限制 |
-| [设计决策](docs/design.md) | 单飞、四态、依赖红线、iOS 为什么是占位 |
+| [设计决策](docs/design.md) | 单飞、四态、依赖红线、iOS 现状与缺口 |
 | [协议契约](https://github.com/HarlonWang/loginbase/blob/main/docs/protocol.md) | wire API，住在服务端仓——唯一权威 |
 
 ## 协议兼容

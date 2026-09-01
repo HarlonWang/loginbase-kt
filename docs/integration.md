@@ -98,6 +98,16 @@ android.buildTypes.getByName("debug") {
 
 中转页 intent-filter 与运行时 redirect 推导都从这一个占位符取值，不会漂移。
 
+iOS 没有 manifest 可推导，redirect 由调用方直接传，scheme 段就是 `callbackURLScheme`
+（同样只支持 private-use scheme，传 https 会在发起点就报错）：
+
+```kotlin
+auth.signIn(OAuthProvider.GitHub, redirect = "cn.example:/loginbase/callback")
+auth.link(OAuthProvider.GitHub, redirect = "cn.example:/loginbase/callback")
+```
+
+两端之后的收口完全一样：
+
 ```kotlin
 // 发起。不挂起——挂起返回值在屏幕旋转、进程回收下必然中断，结果只从唯一通道送达
 auth.signIn(activity, OAuthProvider.GitHub)
@@ -118,6 +128,6 @@ auth.oauthResults.collect { outcome ->
 
 用户关掉授权页会收到确定的 `Cancelled`，不需要再写 `ON_RESUME` 启发式去猜人是不是空手回来了。
 
-同一个 redirect 要在服务端白名单、App manifest、运行时推导三处一致，`Loginbase.redirectUri(context)` 一行可查该填给服务端什么。**本模块建议只由 App 模块依赖**（持有 Activity 的那层），中间模块直接依赖会把含 placeholder 的 manifest 合并进它们的单测 manifest，导致 test 任务构建失败。
+同一个 redirect 要在服务端白名单、App manifest、运行时推导三处一致，`Loginbase.redirectUri(context)` 一行可查该填给服务端什么。**Android 侧建议只由 App 模块依赖本模块**（持有 Activity 的那层），中间模块直接依赖会把含 placeholder 的 manifest 合并进它们的单测 manifest，导致 test 任务构建失败；iOS 侧没有 manifest，随便哪层依赖都行。
 
 配置对不齐的排错、五条已知限制见 [排错](troubleshooting.md)；双 Activity 拓扑与 AppAuth 对照见 [社交登录方案](oauth-browser-design.md)。

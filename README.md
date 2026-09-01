@@ -12,14 +12,14 @@ Once this is wired up, **your app code never contains a token** — no `Authoriz
 | Platform | Status |
 |---|---|
 | Android | In production |
-| iOS | Scaffolded, not production-ready — the target exists to keep `commonMain` free of JVM APIs. [What it would take](docs/design.md) |
+| iOS | Usable from a Kotlin host — email OTP and social sign-in both verified in a Compose Multiplatform app. [Remaining gaps](docs/design.md) |
 
 ## What you get
 
 - **Tokens become somebody else's problem.** Storage, rotation, expiry and retry all live behind one `AuthClient`. Your API calls go back to looking like API calls.
 - **Concurrent refresh is single-flighted.** Twenty requests hit 401 in the same moment and exactly one refresh goes out. Doing this per-HTTP-client — the obvious way — quietly burns the server's session-recovery budget, with no error and no symptom, until the day your users get force-signed-out.
 - **Signed out and offline are different things.** A refresh that fails on a bad network is not a sign-out, but hand-rolled clients send the user to the login screen anyway. Four explicit states, handled exhaustively in one place.
-- **Social sign-in, end to end.** The authorization page opens in a compliant external user-agent (Auth Tab → Custom Tab → system browser, by availability), and callback capture, sign-in vs. link, code exchange, cancellation and process death are all handled for you. Optional Android module; projects that skip it never notice it.
+- **Social sign-in, end to end.** The authorization page opens in the platform's compliant user agent (Auth Tab → Custom Tab → system browser on Android, `ASWebAuthenticationSession` on iOS), and callback capture, sign-in vs. link, code exchange, cancellation and process death are all handled for you. Optional module; projects that skip it never notice it.
 - **Three dependencies, no UI, no engine.** `ktor-client-core`, `kotlinx-serialization-json`, `kotlinx-coroutines-core`. You bring the HTTP engine — the library never picks one on your behalf.
 
 ## Quick start
@@ -109,7 +109,7 @@ From here, business code is just `api.get("$BASE/api/feed").body()`.
 
 ## Social sign-in
 
-Email codes need nothing but the core artifact. Add the optional Android module and the whole browser round trip is handled:
+Email codes need nothing but the core artifact. Add the optional module and the whole authorization round trip is handled:
 
 ```kotlin
 dependencies { implementation("wang.harlon:loginbase-kt-browser:<version>") }
@@ -120,7 +120,15 @@ android.defaultConfig {
 }
 ```
 
-Both the manifest's intent filter and the redirect computed at runtime read that one placeholder, so they cannot drift apart. `Loginbase.redirectUri(context)` prints exactly what to put on the server's allow-list. [Full wiring](docs/integration.md#social-sign-in) · [Design](docs/oauth-browser-design.md)
+Both the manifest's intent filter and the redirect computed at runtime read that one placeholder, so they cannot drift apart. `Loginbase.redirectUri(context)` prints exactly what to put on the server's allow-list.
+
+iOS has no manifest to derive it from, so pass the redirect directly — its scheme is the `callbackURLScheme`:
+
+```kotlin
+auth.signIn(OAuthProvider.GitHub, redirect = "cn.example:/loginbase/callback")
+```
+
+[Full wiring](docs/integration.md#social-sign-in) · [Design](docs/oauth-browser-design.md)
 
 ## Documentation
 
@@ -128,7 +136,7 @@ Both the manifest's intent filter and the redirect computed at runtime read that
 |---|---|
 | [Integration guide](docs/integration.md) | Token storage, error handling, custom engines, the full OAuth wiring |
 | [Troubleshooting](docs/troubleshooting.md) | Symptom → cause, and the known limits of social sign-in |
-| [Design decisions](docs/design.md) | Single-flight, four states, the dependency line, why iOS is scaffolding |
+| [Design decisions](docs/design.md) | Single-flight, four states, the dependency line, where iOS stands |
 | [Protocol contract](https://github.com/HarlonWang/loginbase/blob/main/docs/protocol.md) | The wire API, in the server repo — the single source of truth |
 
 ## Protocol compatibility

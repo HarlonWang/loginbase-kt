@@ -158,17 +158,23 @@ TTL 调到 4 小时，登出后旧令牌就能再活 4 小时。那是拿安全�
 
 加任何新依赖前先停下来问一遍值不值——auth 库是供应链攻击的最高价值目标。
 
-## 7. iOS target 为什么是占位
+## 7. iOS：能用什么、还缺什么
 
-`iosArm64` / `iosSimulatorArm64` 两个 target 存在，但**长期只作占位，不承诺可用**。保留
-它们的实际作用只有一个：让 `commonMain` 在编译期就被约束住，不会悄悄写死 JVM API。
+`iosArm64` / `iosSimulatorArm64` 两个 target 起初只作占位——让 `commonMain` 在编译期就被
+约束住，不会悄悄写死 JVM API。2026-09 起两端都跑通了：`:core` 的邮箱验证码与会话管理、
+`:browser` 的 `ASWebAuthenticationSession` 授权流程，都在一个 Compose Multiplatform App 的
+模拟器上验过（登录、绑定、取消、`github_in_use` 冲突分支、杀进程重启保持登录）。
 
-除此之外不要按「支持 iOS」来接入，三条缺口都还在：
+iOS 的授权流程比 Android 短一截：授权页由系统承载，回跳直接进 completionHandler，
+不经 App 冷启动——Android 那套停泊槽（进程被回收后兑换回跳）在这条路上没有对应物。
 
-- `NSUserDefaultsTokenStore` 与 iOS 侧的语言取值**从未在真机链路上验证过**
-- **没有做 Swift 互操作保障**：public suspend 函数没标 `@Throws`，Swift 侧遇到
-  `LoginbaseException` 是直接崩溃而不是抛 Swift error；`authState` 是 Kotlin
-  `StateFlow`，Swift 里也拿不到
-- CI 不跑 iOS 测试（`commonTest` 只在 Android 上跑过）
+仍然缺的三条：
 
-转正条件就是把这三条补齐。在那之前，iOS 侧的社交登录仍是 `signInUrl()` + 自己开浏览器。
+- **真机未验**：`NSUserDefaultsTokenStore` 的落盘与语言取值只在模拟器上跑过
+- **没有 Swift 互操作保障**：public suspend 函数没标 `@Throws`，Swift 侧遇到
+  `LoginbaseException` 是直接崩溃而不是抛 Swift error；`authState` 是 Kotlin `StateFlow`，
+  Swift 里也拿不到。Kotlin 宿主（Compose Multiplatform）不受影响
+- **CI 不跑 iOS 测试**：`build.yml` 在 ubuntu runner 上，`:browser` 的
+  `iosSimulatorArm64Test` 需要 macOS runner 才跑得起来；发布走的 macos runner 只保证编译过
+
+第二条决定了当前的定位边界：**面向 Kotlin 宿主可用，面向原生 Swift App 不可用。**

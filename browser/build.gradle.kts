@@ -6,7 +6,8 @@ plugins {
     alias(libs.plugins.vanniktech.mavenPublish)
 }
 
-// Android-only 的可选模块（design：oauth-browser 方案 §5.2 / §11 差异 #10）。
+// 可选模块：把「拉起授权页 + 捕获回跳」按平台各自的一等公民做法封掉
+// （Android 见 design 的 oauth-browser 方案 §5.2 / §11 差异 #10，iOS 用 ASWebAuthenticationSession）。
 // 用与 :core 相同的 KMP + android-library 插件组合（而非 com.android.library）：
 // 构建基建只维护一套，host test（JVM 跑 android 源集）也复用同一形态。
 kotlin {
@@ -26,6 +27,9 @@ kotlin {
         }
     }
 
+    iosArm64()
+    iosSimulatorArm64()
+
     sourceSets {
         androidMain.dependencies {
             // api：消费方引本模块就能看到 AuthClient / OAuthOutcome 等核心类型，
@@ -42,6 +46,17 @@ kotlin {
         getByName("androidHostTest").dependencies {
             implementation(libs.kotlin.test)
         }
+
+        iosMain.dependencies {
+            // api 的理由同 androidMain
+            api(project(":core"))
+            // Dispatchers.Main 的 Native 实现。与 core 复用同一个版本条目
+            implementation(libs.kotlinx.coroutines.core)
+        }
+
+        iosTest.dependencies {
+            implementation(libs.kotlin.test)
+        }
     }
 }
 
@@ -55,7 +70,7 @@ mavenPublishing {
 
     pom {
         name.set("loginbase-kt-browser")
-        description.set("Optional Android browser flow for loginbase-kt — in-library OAuth redirect handling (Custom Tab / system browser).")
+        description.set("Optional OAuth redirect handling for loginbase-kt — Custom Tab / system browser on Android, ASWebAuthenticationSession on iOS.")
         url.set("https://github.com/HarlonWang/loginbase-kt")
 
         licenses {
