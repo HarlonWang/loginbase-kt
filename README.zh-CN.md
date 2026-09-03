@@ -141,7 +141,7 @@ auth.signIn(OAuthProvider.GitHub, redirect = "cn.example:/loginbase/callback")
 
 ## 协议兼容
 
-本库用 `PROTOCOL_VERSION` 声明自己实现的协议版本，当前是 **1.3.0**。服务端的 minor 版本在 wire 上向后兼容，所以新服务端配老客户端能用——该升级的理由是你想要某个后续 minor 加的能力，而不是版本号对不上。两仓各自独立版本线。
+本库用 `PROTOCOL_VERSION` 声明自己实现的协议版本，当前是 **1.8.0**。服务端的 minor 版本在 wire 上向后兼容，所以新服务端配老客户端能用——该升级的理由是你想要某个后续 minor 加的能力，而不是版本号对不上。两仓各自独立版本线。
 
 ## License
 

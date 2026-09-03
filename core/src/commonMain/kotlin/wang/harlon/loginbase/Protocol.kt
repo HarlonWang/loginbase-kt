@@ -7,7 +7,7 @@ package wang.harlon.loginbase
  * 恰好毁掉本常量的用途。写成显式 getter 而非带 backing field 的 `val`，是为了让
  * 「不可内联」在语法上就成立——IDE 不会再劝改 const，也就没人会顺手采纳。
  */
-val PROTOCOL_VERSION: String get() = "1.3.0"
+val PROTOCOL_VERSION: String get() = "1.8.0"
 
 /**
  * 协议错误码（`{"error": "..."}` 的取值），与 protocol.md 错误码总表一一对应；

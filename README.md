@@ -141,7 +141,7 @@ auth.signIn(OAuthProvider.GitHub, redirect = "cn.example:/loginbase/callback")
 
 ## Protocol compatibility
 
-This library declares the protocol version it implements as `PROTOCOL_VERSION`, currently **1.3.0**. Server minor releases are backward compatible on the wire, so a newer server works with an older client — upgrade when you want a capability a later minor added, not because the numbers differ. The two repositories keep independent version lines.
+This library declares the protocol version it implements as `PROTOCOL_VERSION`, currently **1.8.0**. Server minor releases are backward compatible on the wire, so a newer server works with an older client — upgrade when you want a capability a later minor added, not because the numbers differ. The two repositories keep independent version lines.
 
 ## License
 
