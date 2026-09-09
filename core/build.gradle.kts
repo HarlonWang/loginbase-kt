@@ -10,6 +10,7 @@ plugins {
 // UA 里的 loginbase-kt/<版本> 令牌：版本只有 CI 发版时经 VERSION_NAME 注入，本地即 SNAPSHOT。
 // 生成源码而非 const：const 会内联进消费方字节码，升级本库不重编译时读到旧值（同 Protocol.kt 的取舍）
 val generateLibraryVersion by tasks.registering {
+    description = "Generates LibraryVersion.kt from the VERSION_NAME Gradle property (UA product token)."
     val version = providers.gradleProperty("VERSION_NAME").orElse("unknown")
     val outDir = layout.buildDirectory.dir("generated/loginbase/commonMain/kotlin")
     inputs.property("version", version)
