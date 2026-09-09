@@ -7,6 +7,29 @@ plugins {
     alias(libs.plugins.vanniktech.mavenPublish)
 }
 
+// UA 里的 loginbase-kt/<版本> 令牌：CI 发版时经 VERSION_NAME 注入正式号，本地读 gradle.properties 的
+// SNAPSHOT；属性根本不存在才落 "unknown"，故意显眼。
+// 生成源码而非 const：const 会内联进消费方字节码，升级本库不重编译时读到旧值（同 Protocol.kt 的取舍）
+val generateLibraryVersion by tasks.registering {
+    description = "Generates LibraryVersion.kt from the VERSION_NAME Gradle property (UA product token)."
+    val version = providers.gradleProperty("VERSION_NAME").orElse("unknown")
+    val outDir = layout.buildDirectory.dir("generated/loginbase/commonMain/kotlin")
+    inputs.property("version", version)
+    outputs.dir(outDir)
+    doLast {
+        val file = outDir.get().file("wang/harlon/loginbase/LibraryVersion.kt").asFile
+        file.parentFile.mkdirs()
+        file.writeText(
+            """
+            |package wang.harlon.loginbase
+            |
+            |// 由 core/build.gradle.kts 从 VERSION_NAME 生成，勿手改
+            |internal val LIBRARY_VERSION: String get() = "${version.get()}"
+            |""".trimMargin(),
+        )
+    }
+}
+
 kotlin {
     android {
         namespace = "wang.harlon.loginbase"
@@ -31,6 +54,9 @@ kotlin {
     iosSimulatorArm64()
 
     sourceSets {
+        commonMain {
+            kotlin.srcDir(generateLibraryVersion)
+        }
         commonMain.dependencies {
             implementation(libs.ktor.client.core)
             implementation(libs.kotlinx.serialization.json)

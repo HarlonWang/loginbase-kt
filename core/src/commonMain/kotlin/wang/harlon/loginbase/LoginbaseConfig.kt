@@ -21,6 +21,12 @@ class LoginbaseConfig internal constructor() {
      */
     var localeProvider: () -> String? = Loginbase::appLanguageTag
 
+    /**
+     * App 自述标识：配了就在每个请求上带 `User-Agent` 与 `X-Client-Version` / `X-Client-Platform`，
+     * 并把版本与平台拼进 [AuthClient.signInUrl]。缺省不带——服务端统计里该 App 就是「未上报世代」。
+     */
+    var client: ClientInfo? = null
+
     /** `internal`：存在的唯一理由是让测试把它调小。本库自建 client，超时行为不需要消费方参与。 */
     internal var timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS
 
