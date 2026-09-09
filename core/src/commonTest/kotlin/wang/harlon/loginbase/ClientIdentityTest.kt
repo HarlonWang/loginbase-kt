@@ -63,13 +63,13 @@ class ClientIdentityTest {
     }
 
     @Test
-    fun `comment 缺省时 UA 没有括号段`() {
+    fun `deviceInfo 缺省时 UA 没有括号段`() {
         val ua = ClientInfo("TestApp", "2.0", ClientPlatform.IOS).userAgent()
         assertTrue(ua.startsWith("TestApp/2.0 loginbase-kt/"), ua)
     }
 
     @Test
-    fun `不合规的版本与 app 在构造期就拦下`() {
+    fun `不合规的版本、appName 与 deviceInfo 在构造期就拦下`() {
         assertFailsWith<IllegalArgumentException> { ClientInfo("TestApp", "1.5.0 beta", ClientPlatform.ANDROID) }
         assertFailsWith<IllegalArgumentException> { ClientInfo("Test App", "1.5.0", ClientPlatform.ANDROID) }
         assertFailsWith<IllegalArgumentException> { ClientInfo("TestApp", "1.5.0", ClientPlatform.ANDROID, "a (b)") }

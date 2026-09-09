@@ -78,10 +78,10 @@ AuthClient(baseUrl, store) { localeProvider = { settings.tag } }  // App 内自�
 ```kotlin
 AuthClient(baseUrl, store) {
     client = ClientInfo(
-        app = "TrendingAI",
+        appName = "TrendingAI",
         version = BuildConfig.VERSION_NAME,          // [0-9A-Za-z.+-]{1,32}，不合规构造期即抛
         platform = ClientPlatform.ANDROID,
-        comment = "Android ${Build.VERSION.RELEASE}; ${Build.MODEL}",   // 只进 UA，可省
+        deviceInfo = "Android ${Build.VERSION.RELEASE}; ${Build.MODEL}",   // 只进 UA，可省
     )
 }
 ```
