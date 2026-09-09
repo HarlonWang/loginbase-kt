@@ -69,11 +69,16 @@ class ClientIdentityTest {
     }
 
     @Test
+    fun `deviceInfo 的括号与反斜杠按 quoted-pair 转义，comment 始终闭合`() {
+        val ua = ClientInfo("TestApp", "1.0", ClientPlatform.DESKTOP, "Windows 11; C:\\ (x64)").userAgent()
+        assertTrue(ua.startsWith("TestApp/1.0 (Windows 11; C:\\\\ \\(x64\\)) loginbase-kt/"), ua)
+    }
+
+    @Test
     fun `不合规的版本、appName 与 deviceInfo 在构造期就拦下`() {
         assertFailsWith<IllegalArgumentException> { ClientInfo("TestApp", "1.5.0 beta", ClientPlatform.ANDROID) }
         assertFailsWith<IllegalArgumentException> { ClientInfo("Test App", "1.5.0", ClientPlatform.ANDROID) }
         assertFailsWith<IllegalArgumentException> { ClientInfo("App@beta", "1.5.0", ClientPlatform.ANDROID) } // @ 不是 tchar
-        assertFailsWith<IllegalArgumentException> { ClientInfo("TestApp", "1.5.0", ClientPlatform.ANDROID, "a (b)") }
         assertFailsWith<IllegalArgumentException> { ClientInfo("TestApp", "1.5.0", ClientPlatform.ANDROID, "a\tb") }
         // tchar 里的标点合法
         ClientInfo("Test-App_2.0", "1.5.0", ClientPlatform.ANDROID, "Android 14; Pixel 7; channel=play")
