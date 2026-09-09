@@ -7,7 +7,8 @@ plugins {
     alias(libs.plugins.vanniktech.mavenPublish)
 }
 
-// UA 里的 loginbase-kt/<版本> 令牌：版本只有 CI 发版时经 VERSION_NAME 注入，本地即 SNAPSHOT。
+// UA 里的 loginbase-kt/<版本> 令牌：CI 发版时经 VERSION_NAME 注入正式号，本地读 gradle.properties 的
+// SNAPSHOT；属性根本不存在才落 "unknown"，故意显眼。
 // 生成源码而非 const：const 会内联进消费方字节码，升级本库不重编译时读到旧值（同 Protocol.kt 的取舍）
 val generateLibraryVersion by tasks.registering {
     description = "Generates LibraryVersion.kt from the VERSION_NAME Gradle property (UA product token)."
