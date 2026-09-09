@@ -3,6 +3,7 @@ package wang.harlon.loginbase
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.HttpClientEngine
+import io.ktor.client.plugins.DefaultRequest
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.delete
 import io.ktor.client.request.header
@@ -54,12 +55,14 @@ class AuthClient(
     private val localeProvider: () -> String?
     private val injectedEngine: HttpClientEngine?
     private val timeoutMillis: Long
+    private val clientInfo: ClientInfo?
 
     init {
         val config = LoginbaseConfig().apply(configure)
         localeProvider = config.localeProvider
         injectedEngine = config.httpEngine
         timeoutMillis = config.timeoutMillis
+        clientInfo = config.client
     }
 
     private val json = Json {
@@ -72,15 +75,21 @@ class AuthClient(
     private val httpDelegate = lazy {
         val engine = injectedEngine
         // 传 engine 的重载走 manageEngine = false，close() 不会关掉消费方的 engine
-        if (engine != null) HttpClient(engine) { installTimeout() }
-        else HttpClient { installTimeout() }
+        if (engine != null) HttpClient(engine) { installPlugins() }
+        else HttpClient { installPlugins() }
     }
 
-    private fun HttpClientConfig<*>.installTimeout() {
+    private fun HttpClientConfig<*>.installPlugins() {
         install(HttpTimeout) {
             requestTimeoutMillis = timeoutMillis
             connectTimeoutMillis = timeoutMillis
             socketTimeoutMillis = timeoutMillis
+        }
+        val info = clientInfo ?: return
+        install(DefaultRequest) {
+            headers.append(HttpHeaders.UserAgent, info.userAgent())
+            headers.append(CLIENT_VERSION_HEADER, info.version)
+            headers.append(CLIENT_PLATFORM_HEADER, info.platform.wire)
         }
     }
 
@@ -152,9 +161,16 @@ class AuthClient(
      * browser 模块的 `signIn()`，一般不必手动走这条。
      * 回跳带 `otc`，由 [handleOAuthCallback] 或 [exchangeOtc] 兑换。
      */
-    fun signInUrl(provider: OAuthProvider, redirect: String): String =
-        "$base/oauth/${provider.id.encodeURLPathPart()}/start" +
-            "?redirect=${redirect.encodeURLParameter()}"
+    fun signInUrl(provider: OAuthProvider, redirect: String): String = buildString {
+        append(base).append("/oauth/").append(provider.id.encodeURLPathPart()).append("/start")
+        append("?redirect=").append(redirect.encodeURLParameter())
+        // 浏览器发出的 start 带不了 App 的头，版本 / 平台只能走参数（link 的授权 URL 是服务端换来的，
+        // 那条轨由 link/start 的请求头覆盖）
+        clientInfo?.let {
+            append("&client_version=").append(it.version.encodeURLParameter())
+            append("&client_platform=").append(it.platform.wire)
+        }
+    }
 
     /** `POST /oauth/exchange`：拿 deepLink 回来的 otc 换令牌对，成功即落盘。 */
     suspend fun exchangeOtc(otc: String): AuthSession =

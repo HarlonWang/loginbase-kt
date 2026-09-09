@@ -71,6 +71,23 @@ AuthClient(baseUrl, store) { localeProvider = { settings.tag } }  // App 内自�
 
 返回 `null`（以及空串、`und`）只有一个含义——**「我没意见」**，回落系统语言，不是「不要发」；想一律某种语言就返回定值如 `{ "en" }`。服务端对未知语言静默回落，故这条链路不产生任何新的错误分支。取值也单独暴露成 `Loginbase.appLanguageTag()`，方便拼自己的回落链。
 
+## 客户端标识
+
+服务端统计按 App 版本 / 平台切片（protocol 1.9.0「客户端标识」节），值由客户端结构化上报：
+
+```kotlin
+AuthClient(baseUrl, store) {
+    client = ClientInfo(
+        app = "TrendingAI",
+        version = BuildConfig.VERSION_NAME,          // [0-9A-Za-z.+-]{1,32}，不合规构造期即抛
+        platform = ClientPlatform.ANDROID,
+        comment = "Android ${Build.VERSION.RELEASE}; ${Build.MODEL}",   // 只进 UA，可省
+    )
+}
+```
+
+配了之后每个请求带 `X-Client-Version` / `X-Client-Platform` 两个头与 `User-Agent`（`TrendingAI/1.5.0 (Android 14; Pixel 7) loginbase-kt/0.4.0`），`signInUrl` 带同名参数——浏览器发出的 start 带不了 App 的头。不配就一个字都不发，服务端把该 App 记作「未上报世代」。**版本与平台只从这两个头 / 参数读，服务端不解析 UA**；UA 里的机型、渠道只供人工排障。
+
 ## 定制 engine
 
 `HttpClient` 始终由本库自建，engine 不由本库提供——消费方 classpath 里要有（Android `ktor-client-okhttp` / iOS `ktor-client-darwin`）。要证书固定、走代理、加 OkHttp 拦截器，把 engine 传进来即可：
