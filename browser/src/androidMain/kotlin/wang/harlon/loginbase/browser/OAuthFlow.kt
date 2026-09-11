@@ -45,8 +45,9 @@ fun AuthClient.link(
     activity: Activity,
     provider: OAuthProvider,
     redirect: String = Loginbase.redirectUri(activity),
+    clientFlowId: String? = null,
 ) {
-    startFlow(activity, LoginbaseAuthActivity.MODE_LINK, provider, redirect)
+    startFlow(activity, LoginbaseAuthActivity.MODE_LINK, provider, redirect, clientFlowId)
 }
 
 /**

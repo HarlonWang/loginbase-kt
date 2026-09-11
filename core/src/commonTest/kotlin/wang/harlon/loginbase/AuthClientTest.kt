@@ -23,6 +23,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import io.ktor.http.content.TextContent
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class AuthClientTest {
@@ -588,6 +590,27 @@ class AuthClientTest {
         assertEquals("https://github.com/login/oauth/authorize?x=1", url)
         assertEquals("Bearer a0", sawBearer)
         assertEquals("$BASE/oauth/github/link/start", sawUrl)
+    }
+
+    @Test
+    fun `linkUrl 的 clientFlowId 进 POST body 而非 URL`() = authTest {
+        // link 的授权 URL 由服务端返回，拼在 URL 上服务端看不到——必须走 body（服务端 2.1.0 起接收）
+        var sawBody: String? = null
+        var sawUrl: String? = null
+        val (client, _) = clientWith(InMemoryTokenStore(TokenPair("a0", "r0"))) { request ->
+            sawBody = (request.body as TextContent).text
+            sawUrl = request.url.toString()
+            respond("""{"authorizeUrl":"https://github.com/login/oauth/authorize?x=1"}""", HttpStatusCode.OK, jsonHeaders())
+        }
+        client.linkUrl(OAuthProvider.GitHub, "app://cb", "cf-link_1")
+        assertTrue(sawBody!!.contains(""""client_flow_id":"cf-link_1""""), sawBody!!)
+        assertEquals("$BASE/oauth/github/link/start", sawUrl) // 没被拼进 query
+
+        // 不传 / 空白视同未传，不往 body 里塞空值
+        client.linkUrl(OAuthProvider.GitHub, "app://cb")
+        assertFalse(sawBody!!.contains("client_flow_id"), sawBody!!)
+        client.linkUrl(OAuthProvider.GitHub, "app://cb", "  ")
+        assertFalse(sawBody!!.contains("client_flow_id"), sawBody!!)
     }
 
     @Test

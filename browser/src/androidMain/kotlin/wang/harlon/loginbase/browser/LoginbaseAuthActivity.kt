@@ -120,7 +120,7 @@ internal class LoginbaseAuthActivity : ComponentActivity() {
             MODE_LINK -> OAuthFlowRuntime.scope.launch {
                 // link 的授权 URL 要先带 Bearer POST 换取，这次往返里用户停在透明页上
                 val url = try {
-                    client.linkUrl(provider, redirect)
+                    client.linkUrl(provider, redirect, intent.getStringExtra(EXTRA_CLIENT_FLOW_ID))
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: LoginbaseException) {
