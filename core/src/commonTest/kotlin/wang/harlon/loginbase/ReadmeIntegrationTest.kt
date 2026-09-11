@@ -13,6 +13,8 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.serialization.json.Json
@@ -48,9 +50,16 @@ class ReadmeIntegrationTest {
      * （那是 README 里提到的「401 错开」情形，不烧配额，但不是本用例要验的东西）。
      */
     private class FakeServer {
+        // rendezvous 保证两个请求一起离开 401、并发打刷新接口，`refreshCalls++` 必然竞争：
+        // 读-改-写不是原子的，两次自增可能读到同一个旧值，把 2 丢成 1。CI 上偶发过两次
+        // （2026-08-15、2026-09-09），本地极难复现。计数改为加锁。
+        private val countLock = Mutex()
         var refreshCalls = 0
+            private set
         private val firstArrived = CompletableDeferred<Unit>()
         private val secondArrived = CompletableDeferred<Unit>()
+
+        private suspend fun countRefresh() = countLock.withLock { refreshCalls++ }
 
         suspend fun rendezvous() {
             if (!firstArrived.complete(Unit)) secondArrived.complete(Unit)
@@ -60,7 +69,7 @@ class ReadmeIntegrationTest {
         val handler: suspend io.ktor.client.engine.mock.MockRequestHandleScope.(HttpRequestData) -> io.ktor.client.request.HttpResponseData =
             { request ->
                 if (request.url.encodedPath.endsWith("/refresh")) {
-                    refreshCalls++
+                    countRefresh()
                     respond(
                         """{"accessToken":"a1","refreshToken":"r1"}""",
                         HttpStatusCode.OK,
