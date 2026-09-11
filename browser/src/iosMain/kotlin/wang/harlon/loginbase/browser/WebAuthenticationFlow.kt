@@ -48,14 +48,15 @@ fun AuthClient.signIn(
 /**
  * 已登录用户绑定第二身份：登录/绑定回跳的差异由库分辨，消费方在同一个
  * [AuthClient.oauthResults] 里拿 [OAuthOutcome.Linked]。其余同 [signIn]。
+ * [clientFlowId] 走 POST body 而非 URL——授权 URL 由服务端返回，拼上去服务端看不到。
  */
 @OptIn(LoginbaseInternalApi::class) // oauthFailureReason：本模块就是它说的「配套模块」
-fun AuthClient.link(provider: OAuthProvider, redirect: String) {
+fun AuthClient.link(provider: OAuthProvider, redirect: String, clientFlowId: String? = null) {
     val scheme = callbackScheme(redirect)
     WebAuthRuntime.scope.launch {
         // link 的授权 URL 要先带 Bearer POST 换取，这次往返里用户还停在原界面
         val url = try {
-            linkUrl(provider, redirect)
+            linkUrl(provider, redirect, clientFlowId)
         } catch (e: LoginbaseException) {
             publishFailure(e.oauthFailureReason())
             return@launch

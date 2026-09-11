@@ -250,16 +250,25 @@ class AuthClient(
     /**
      * `POST /oauth/{provider}/link/start`：**已登录用户**绑定第二身份，返回授权 URL。
      * 先 POST 再开浏览器：这步要 Bearer 鉴权，浏览器导航带不了头。
+     * [clientFlowId] 随 body 上行（服务端 2.1.0 起接收），供消费方埋点跨库对齐。
      * 回跳是 `linked=<provider>` / `error=<reason>`，不产生新会话。
      */
-    suspend fun linkUrl(provider: OAuthProvider, redirect: String): String {
+    suspend fun linkUrl(
+        provider: OAuthProvider,
+        redirect: String,
+        clientFlowId: String? = null,
+    ): String {
         val token = accessToken()
             ?: throw LoginbaseException.NotAuthenticated(
                 "Linking an OAuth identity requires an authenticated session"
             )
         val body = request(
             url = "$base/oauth/${provider.id.encodeURLPathPart()}/link/start",
-            payload = mapOf("redirect" to redirect),
+            // 走 body 而非 query：这步要 Bearer，且授权 URL 由服务端返回，拼在 URL 上服务端看不到
+            payload = buildMap {
+                put("redirect", redirect)
+                clientFlowId?.takeIf { it.isNotBlank() }?.let { put("client_flow_id", it) }
+            },
             bearer = token,
         )
         return body.stringOrNull("authorizeUrl")

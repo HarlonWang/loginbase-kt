@@ -39,14 +39,17 @@ fun AuthClient.signIn(
 
 /**
  * 已登录用户绑定第二身份：登录/绑定回跳的差异由库分辨，消费方在同一个
- * [AuthClient.oauthResults] 里拿 [wang.harlon.loginbase.OAuthOutcome.Linked]。其余同 [signIn]。
+ * [AuthClient.oauthResults] 里拿 [wang.harlon.loginbase.OAuthOutcome.Linked]。其余同 [signIn]，
+ * 但 [clientFlowId] 的**传输位置不同**：[signIn] 把它拼进授权 URL，本函数走 `link/start`
+ * 的 POST body——link 的授权 URL 由服务端返回，拼在 URL 上服务端看不到。
  */
 fun AuthClient.link(
     activity: Activity,
     provider: OAuthProvider,
     redirect: String = Loginbase.redirectUri(activity),
+    clientFlowId: String? = null,
 ) {
-    startFlow(activity, LoginbaseAuthActivity.MODE_LINK, provider, redirect)
+    startFlow(activity, LoginbaseAuthActivity.MODE_LINK, provider, redirect, clientFlowId)
 }
 
 /**
