@@ -409,43 +409,41 @@ class AuthClient(
     }
 
     /**
-     * 登出当前会话：`DELETE /sessions` + 清本地。服务端调用尽力而为——用户点了登出
-     * 就该立刻是登出的，网络失败不该拦。**只取 [storeMutex] 不取 [refreshMutex]**：
-     * 后者可能被在途刷新占几十秒；与在途刷新的竞态由落盘前重读比对收敛。
+     * 登出当前会话：先清本地（[authState] 立即变 [AuthState.SignedOut]），再 `DELETE /sessions`。
+     * 服务端调用尽力而为——用户点了登出就该立刻是登出的，网络失败与慢都不该拦；本函数仍等
+     * DELETE 结束才返回，登出后的 UI 该跟 [authState] 走，别挂在返回之后。
+     * **只取 [storeMutex] 不取 [refreshMutex]**：后者可能被在途刷新占几十秒；
+     * 与在途刷新的竞态由落盘前重读比对收敛。
      */
     suspend fun signOut(): Unit = signOutInternal("$base/sessions")
 
-    /** 登出该用户全部会话：`DELETE /sessions/all` + 清本地。同样尽力而为。 */
+    /** 登出该用户全部会话：先清本地，再 `DELETE /sessions/all`。同样尽力而为。 */
     suspend fun signOutAll(): Unit = signOutInternal("$base/sessions/all")
 
     /**
-     * 登出的取消策略：本地清除放 `finally` + [NonCancellable]——协程中途被取消、
-     * 结果却还登录着，是最难排查的状态不一致；取消随后照常向上传播。
+     * 先清本地、再发 DELETE：闲置连接被静默丢弃时 DELETE 要挂满超时，本地清除排在它后面，
+     * 用户就要对着「还登录着」干等（⏱ 2026-09-23 Android 实测 15s）。
+     * 本地清除包 [NonCancellable]，调用方被取消也必定完成；DELETE 的取消照常传播。
      */
     private suspend fun signOutInternal(url: String) {
-        val token = tokenStore.load()?.accessToken
+        val token = withContext(NonCancellable) { clearLocally() } ?: return
         try {
-            if (token != null) {
-                try {
-                    http.delete(url) { header(HttpHeaders.Authorization, "Bearer $token") }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    // 尽力而为：服务端那条会话最坏自然失效，不该把用户卡在登录态
-                }
-            }
-        } finally {
-            withContext(NonCancellable) { clearLocally() }
+            http.delete(url) { header(HttpHeaders.Authorization, "Bearer $token") }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // 尽力而为：服务端那条会话最坏自然失效
         }
     }
 
     // 与 refresh 的「重读比对 + 落盘」在 storeMutex 上互斥，两个顺序都给出正确结果；
     // 缺这把锁，clear 会插进重读与落盘之间，退化回会话复活 bug
-    private suspend fun clearLocally() {
-        storeMutex.withLock {
-            tokenStore.clear()
-            signedOut(SignOutReason.UserInitiated)
-        }
+    /** @return 清除前的 access token，供随后的 DELETE 使用；本来就没会话时为 null */
+    private suspend fun clearLocally(): String? = storeMutex.withLock {
+        val token = tokenStore.load()?.accessToken
+        tokenStore.clear()
+        signedOut(SignOutReason.UserInitiated)
+        token
     }
 
     /**

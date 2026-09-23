@@ -224,6 +224,51 @@ class AuthClientTest {
         )
     }
 
+    @Test
+    fun `signOut 不等 DELETE 返回就已是登出态`() = authTest {
+        // 闲置连接被静默丢弃时 DELETE 会挂满超时；本地清除若排在它后面，用户要干等十几秒
+        val store = InMemoryTokenStore(TokenPair("a0", "r0"))
+        val deleteArrived = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        var authHeader: String? = null
+        val (client, _) = clientWith(store) {
+            authHeader = it.headers[HttpHeaders.Authorization]
+            deleteArrived.complete(Unit)
+            release.await()
+            respond("", HttpStatusCode.OK)
+        }
+
+        val job = launch { client.signOut() }
+        deleteArrived.await()
+
+        assertNull(store.load())
+        assertEquals(
+            AuthState.SignedOut(SignOutReason.UserInitiated),
+            client.authState.value,
+        )
+        assertEquals("Bearer a0", authHeader, "先清本地也得带着清除前的令牌去撤服务端会话")
+        assertTrue(job.isActive, "DELETE 还挂着")
+        release.complete(Unit)
+        job.join()
+    }
+
+    @Test
+    fun `本来就没会话时 signOut 不发 DELETE`() = authTest {
+        var requests = 0
+        val (client, _) = clientWith(InMemoryTokenStore()) {
+            requests++
+            respond("", HttpStatusCode.OK)
+        }
+
+        client.signOut()
+
+        assertEquals(0, requests)
+        assertEquals(
+            AuthState.SignedOut(SignOutReason.UserInitiated),
+            client.authState.value,
+        )
+    }
+
     /**
      * 让刷新请求停在「已发出、未返回」的状态，把并发窗口变成确定性的。
      * `arrived` 在服务端收到刷新请求时完成，`release` 由测试决定何时放行响应。
